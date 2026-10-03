@@ -3,39 +3,44 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { useApp } from "@/components/ctx";
 import { useApi } from "@/components/useApi";
 import { localStore } from "@/components/local";
-import { Card, Kpi, Loading, Offline } from "@/components/ui";
+import { C, Card, ErrorNote, Kpi, Loading, Offline, axisProps, tooltipStyle } from "@/components/ui";
 import { computeUsage } from "@/lib/metrics";
-import { num } from "@/lib/format";
+import { num, shortDay } from "@/lib/format";
 
 export default function Usage() {
-  const { qs, filters, user } = useApp();
-  const scope = user.role === "client" ? { portfolio: user.portfolio, visibleOnly: true } : {};
-  const { data, offline, loading } = useApi(`/api/usage?${qs}`, () => computeUsage(localStore(), filters, scope));
-  if (loading || !data) return <Loading />;
+  const { qs, filters, scope } = useApp();
+  const { data, offline, error } = useApi(`/api/usage?${qs}`, () => computeUsage(localStore(), filters, scope));
+  if (error) return <ErrorNote text={error} />;
+  if (!data) return <Loading />;
   const { kpis: k } = data;
   return (
     <>
       <Offline show={offline} />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi label="Usage minutes" value={num(k.minutes)} />
+        <Kpi label="Billable minutes" value={num(k.minutes)} sub="Connected talk time, rounded up" />
         <Kpi label="Connected calls" value={num(k.connectedCalls)} />
-        <Kpi label="Avg min / call" value={k.avgMinPerCall.toFixed(1)} />
-        <Kpi label="Verticals billed" value={k.verticals} />
+        <Kpi label="Average per call" value={`${k.avgMinPerCall.toFixed(1)} min`} />
+        <Kpi label="Portfolios billed" value={k.verticals} />
       </div>
-      <Card title="Daily usage (billable connected minutes)">
-        <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={data.dailyMinutes}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="date" tickFormatter={(s: string) => s.slice(5)} fontSize={11} /><YAxis fontSize={11} />
-            <Tooltip formatter={(v) => [`${v} min`, "Minutes"]} /><Bar dataKey="minutes" fill="#4f46e5" radius={[4, 4, 0, 0]} />
+      <Card title="Daily usage" sub="Billable connected minutes per day">
+        <ResponsiveContainer width="100%" height={270}>
+          <BarChart data={data.dailyMinutes} margin={{ left: -12 }}>
+            <CartesianGrid stroke={C.grid} vertical={false} />
+            <XAxis dataKey="date" tickFormatter={shortDay} {...axisProps} minTickGap={24} /><YAxis {...axisProps} />
+            <Tooltip {...tooltipStyle} cursor={{ fill: "#f1eee8" }} labelFormatter={(l) => shortDay(String(l))} formatter={(v) => [`${num(Number(v))} min`, "Minutes"]} />
+            <Bar dataKey="minutes" fill={C.brand} radius={[2, 2, 0, 0]} isAnimationActive={false} />
           </BarChart>
         </ResponsiveContainer>
       </Card>
-      <Card title="Usage by campaign">
-        <table className="w-full"><thead><tr><th>Campaign</th><th>Connected calls</th><th>Raw seconds</th><th>Billable minutes</th></tr></thead>
-          <tbody className="divide-y">{data.campaigns.map((c) => (
-            <tr key={c.campaign}><td><code className="text-xs">{c.campaign}</code></td><td>{num(c.calls)}</td><td>{num(c.seconds)}</td><td className="font-medium">{num(c.billableMinutes)}</td></tr>
-          ))}</tbody></table>
+      <Card title="Usage by campaign" pad={false}>
+        <div className="overflow-x-auto">
+          <table className="table w-full whitespace-nowrap">
+            <thead><tr><th>Campaign</th><th>Product</th><th className="text-right">Connected calls</th><th className="text-right">Raw seconds</th><th className="text-right">Billable minutes</th></tr></thead>
+            <tbody>{data.campaigns.map((c) => (
+              <tr key={c.campaign}><td className="font-mono text-[12.5px]">{c.campaign}</td><td>{c.product}</td><td className="text-right num">{num(c.calls)}</td><td className="text-right num">{num(c.seconds)}</td><td className="text-right font-medium num">{num(c.billableMinutes)}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
       </Card>
     </>
   );

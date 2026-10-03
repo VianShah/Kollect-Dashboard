@@ -1,74 +1,110 @@
 "use client";
-import { Sparkles } from "lucide-react";
-import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, BarChart } from "recharts";
+import Link from "next/link";
+import { ArrowRight } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useApp } from "@/components/ctx";
 import { useApi } from "@/components/useApi";
 import { localStore } from "@/components/local";
-import { Card, Kpi, Loading, Offline } from "@/components/ui";
+import { C, Card, DISP_COLOR, Delta, ErrorNote, Kpi, Loading, Offline, axisProps, tooltipStyle } from "@/components/ui";
 import { computeOverview } from "@/lib/metrics";
-import { inr, num, pct } from "@/lib/format";
+import { inr, num, pct, shortDay, time } from "@/lib/format";
 
 export default function Home() {
-  const { qs, filters, user } = useApp();
-  const scope = user.role === "client" ? { portfolio: user.portfolio, visibleOnly: true } : {};
-  const { data, offline, loading } = useApi(`/api/overview?${qs}`, () => computeOverview(localStore(), filters, scope));
-  if (loading || !data) return <Loading />;
-  const { kpis: k, trend, insights } = data;
-  const short = (s: string) => s.slice(5);
+  const { qs, filters, scope, openBorrower } = useApp();
+  const { data, offline, error } = useApi(`/api/overview?${qs}`, () => computeOverview(localStore(), filters, scope));
+  if (error) return <ErrorNote text={error} />;
+  if (!data) return <Loading />;
+  const { kpis: k, deltas, trend, notes } = data;
+  const spark = (key: "connectRate" | "recovered" | "ptp") => trend.map((t) => t[key]);
 
   return (
     <>
       <Offline show={offline} />
-      <div className="flex gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-        <Sparkles className="mt-0.5 shrink-0 text-indigo-600" size={18} />
-        <div>
-          <div className="font-semibold text-indigo-900">At-a-glance analysis</div>
-          <ul className="mt-1 list-disc pl-5 text-sm text-indigo-900/90">{insights.map((i) => <li key={i}>{i}</li>)}</ul>
-        </div>
+      <section className="card px-5 py-4">
+        <div className="label">What changed</div>
+        <ol className="mt-2 grid gap-x-8 gap-y-1.5 lg:grid-cols-2">
+          {notes.map((n, i) => (
+            <li key={i} className="flex gap-2.5 text-[13.5px] leading-snug">
+              <span className="text-muted num">{String(i + 1).padStart(2, "0")}</span>
+              <span>{n.text}{n.href && <> <Link href={n.href} className="whitespace-nowrap font-medium text-brand underline-offset-2 hover:underline">View</Link></>}</span>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+        <Kpi label="Portfolio outstanding" value={inr(k.outstanding)} sub="Largest balances first" href="/borrowers?sort=outstanding" />
+        <Kpi label="Recovered" value={inr(k.recovered)} delta={<Delta value={deltas.recovered} unit="%" />} spark={spark("recovered")} href="/borrowers?disposition=Paid" />
+        <Kpi label="Recovery rate" value={pct(k.recoveryRate)} delta={<Delta value={deltas.recoveryRate} unit="pts" />} sub="Month-end forecast" href="/performance?tab=Forecast" />
+        <Kpi label="Active PTPs" value={num(k.activePtp)} sub="Promises awaiting payment" href="/borrowers?disposition=PTP" />
+        <Kpi label="PTP kept rate" value={pct(k.ptpKeptRate)} tone={k.ptpKeptRate < 70 ? "bad" : undefined} sub="See broken promises" href="/borrowers?ptp=broken" />
+        <Kpi label="Contact rate" value={pct(k.contactRate)} delta={<Delta value={deltas.contactRate} unit="pts" />} spark={spark("connectRate")} href="/audit" />
+        <Kpi label="Contact → PTP" value={pct(k.contactToPtp)} delta={<Delta value={deltas.contactToPtp} unit="pts" />} spark={spark("ptp")} href="/audit?classification=PTP" />
+        <Kpi label="Payment links shared" value={num(k.linksShared)} sub={`${pct(k.linkConversion)} paid via link`} href="/borrowers?link=shared" />
+        <Kpi label="Average DPD" value={`${k.avgDpd.toFixed(0)} days`} sub="Most overdue first" href="/borrowers?sort=dpd" />
+        <Kpi label="Open escalations" value={num(k.openEscalations)} tone={k.openEscalations > 40 ? "bad" : undefined} sub="With the human desk" href="/borrowers?disposition=Escalated" />
       </div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Kpi label="Portfolio Outstanding" value={inr(k.outstanding)} />
-        <Kpi label="Recovered (period)" value={inr(k.recovered)} />
-        <Kpi label="Recovery Rate" value={pct(k.recoveryRate)} />
-        <Kpi label="Active PTPs" value={num(k.activePtp)} />
-        <Kpi label="PTP Kept Rate" value={pct(k.ptpKeptRate)} tone={k.ptpKeptRate >= 70 ? "good" : "bad"} />
-        <Kpi label="Contact Rate" value={pct(k.contactRate)} />
-        <Kpi label="Contact → PTP" value={pct(k.contactToPtp)} />
-        <Kpi label="Payment Links Shared" value={num(k.linksShared)} sub={`${pct(k.linkConversion)} conversion`} />
-        <Kpi label="Avg DPD" value={`${k.avgDpd.toFixed(0)} days`} />
-        <Kpi label="Open Escalations" value={num(k.openEscalations)} tone={k.openEscalations > 40 ? "bad" : undefined} />
-      </div>
+
       <div className="grid gap-4 xl:grid-cols-2">
-        <Card title="Daily Contact Trend">
-          <ResponsiveContainer width="100%" height={280}>
-            <ComposedChart data={trend}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="date" tickFormatter={short} fontSize={11} />
-              <YAxis yAxisId="l" fontSize={11} />
-              <YAxis yAxisId="r" orientation="right" unit="%" domain={[0, 100]} fontSize={11} />
-              <Tooltip formatter={(v, n) => (n === "Connect rate" ? `${Number(v).toFixed(1)}%` : v)} />
-              <Legend />
-              <Bar yAxisId="l" dataKey="attempted" name="Attempted" fill="#c7d2fe" />
-              <Bar yAxisId="l" dataKey="connected" name="Connected" fill="#4f46e5" />
-              <Line yAxisId="r" dataKey="connectRate" name="Connect rate" stroke="#f59e0b" strokeWidth={2} dot={false} />
+        <Card title="Daily contact trend" sub="Attempted and connected calls, with connect rate">
+          <ResponsiveContainer width="100%" height={270}>
+            <ComposedChart data={trend} margin={{ left: -12, right: 0 }}>
+              <CartesianGrid stroke={C.grid} vertical={false} />
+              <XAxis dataKey="date" tickFormatter={shortDay} {...axisProps} minTickGap={24} />
+              <YAxis yAxisId="l" {...axisProps} />
+              <YAxis yAxisId="r" orientation="right" unit="%" domain={[0, 100]} {...axisProps} />
+              <Tooltip {...tooltipStyle} labelFormatter={(l) => shortDay(String(l))} formatter={(v, n) => (n === "Connect rate" ? `${Number(v).toFixed(1)}%` : v)} />
+              <Legend iconType="square" iconSize={10} wrapperStyle={{ fontSize: 12 }} />
+              <Bar yAxisId="l" dataKey="attempted" name="Attempted" fill={C.brandLight} isAnimationActive={false} />
+              <Bar yAxisId="l" dataKey="connected" name="Connected" fill={C.brand} isAnimationActive={false} />
+              <Line yAxisId="r" dataKey="connectRate" name="Connect rate" stroke={C.rust} strokeWidth={2} dot={false} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </Card>
-        <Card title="Disposition Trend">
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={trend}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="date" tickFormatter={short} fontSize={11} />
-              <YAxis fontSize={11} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="paid" name="Paid" stackId="a" fill="#10b981" />
-              <Bar dataKey="ptp" name="PTP" stackId="a" fill="#4f46e5" />
-              <Bar dataKey="dispute" name="Dispute" stackId="a" fill="#f59e0b" />
-              <Bar dataKey="other" name="Other" stackId="a" fill="#94a3b8" />
-              <Bar dataKey="noContact" name="No Contact" stackId="a" fill="#e2e8f0" />
+        <Card title="Disposition trend" sub="Call outcomes per day">
+          <ResponsiveContainer width="100%" height={270}>
+            <BarChart data={trend} margin={{ left: -12, right: 0 }}>
+              <CartesianGrid stroke={C.grid} vertical={false} />
+              <XAxis dataKey="date" tickFormatter={shortDay} {...axisProps} minTickGap={24} />
+              <YAxis {...axisProps} />
+              <Tooltip {...tooltipStyle} labelFormatter={(l) => shortDay(String(l))} />
+              <Legend iconType="square" iconSize={10} wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="paid" name="Paid" stackId="a" fill={DISP_COLOR.Paid} isAnimationActive={false} />
+              <Bar dataKey="ptp" name="PTP" stackId="a" fill={DISP_COLOR.PTP} isAnimationActive={false} />
+              <Bar dataKey="dispute" name="Dispute" stackId="a" fill={DISP_COLOR.Dispute} isAnimationActive={false} />
+              <Bar dataKey="other" name="Other" stackId="a" fill={C.greyDark} isAnimationActive={false} />
+              <Bar dataKey="noContact" name="No contact" stackId="a" fill={C.grey} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card title="Follow-ups booked for today" sub="Call-backs borrowers asked for" right={<Link href="/followups" className="btn btn-ghost">Calendar <ArrowRight size={14} aria-hidden="true" /></Link>} pad={false}>
+          <ul>
+            {data.followUpsToday.length === 0 && <li className="px-4 pb-6 pt-2 text-[13px] text-muted">No call-backs left for today.</li>}
+            {data.followUpsToday.map((f) => (
+              <li key={f.id} className="border-t border-line first:border-t-0">
+                <button className="grid w-full grid-cols-[52px_1fr] gap-3 px-4 py-2.5 text-left hover:bg-sunk/50" onClick={() => openBorrower(f.borrowerId)}>
+                  <span className="font-mono text-[13px] num">{time(f.at)}</span>
+                  <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{f.name} <span className="font-normal text-muted">· {f.product}</span></span><span className="block truncate text-[12px] text-muted">{f.note}</span></span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+        <Card title="Latest escalations" sub="Most recent hand-offs to the human desk" right={<Link href="/borrowers?disposition=Escalated" className="btn btn-ghost">All <ArrowRight size={14} aria-hidden="true" /></Link>} pad={false}>
+          <ul>
+            {data.escalations.length === 0 && <li className="px-4 pb-6 pt-2 text-[13px] text-muted">No open escalations.</li>}
+            {data.escalations.map((b) => (
+              <li key={b.id} className="border-t border-line first:border-t-0">
+                <button className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-sunk/50" onClick={() => openBorrower(b.id)}>
+                  <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium">{b.name} <span className="font-normal text-muted">· {b.loanId}</span></span><span className="block truncate text-[12px] text-muted">{b.escalationReason}</span></span>
+                  <span className="text-[12.5px] num">{inr(b.outstanding)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
         </Card>
       </div>
     </>
