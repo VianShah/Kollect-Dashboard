@@ -1,48 +1,83 @@
 "use client";
-import { useMemo, useState } from "react";
-import { Check, Copy, Download, Link2, Siren } from "lucide-react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Download, X } from "lucide-react";
 import { useApp } from "@/components/ctx";
 import { useApi } from "@/components/useApi";
 import { localStore } from "@/components/local";
-import { Badge, Card, Loading, Offline } from "@/components/ui";
-import { scoped } from "@/lib/metrics";
-import { CAN } from "@/lib/roles";
+import { Badge, Card, Empty, ErrorNote, Loading, Offline, Pager } from "@/components/ui";
+import { publicBorrower, scoped } from "@/lib/metrics";
+import { bucketOf } from "@/lib/mock";
 import { d, inrFull } from "@/lib/format";
-import type { Borrower } from "@/lib/types";
+import type { Borrower, Bucket } from "@/lib/types";
 
 const SEGMENTS = ["All", "Pre Due", "Post Due (0–30)", "Post Due (30–90)"];
+const DISPOSITIONS = ["Paid", "PTP", "Partial", "Callback", "Dispute", "No Contact", "Escalated"];
+const STAGES = ["Assigned", "Contacted", "Engaged", "PTP", "Recovered"];
+const BUCKETS: Bucket[] = ["Current", "1–30", "31–60", "61–90"];
 const tier = (s: number) => (s >= 750 ? "Prime" : s >= 650 ? "Near-prime" : "Subprime");
 
-export default function Borrowers() {
-  const { qs, filters, user } = useApp();
-  const scope = user.role === "client" ? { portfolio: user.portfolio, visibleOnly: true } : {};
-  const { data, setData, offline, loading } = useApi<{ borrowers: Borrower[] }>(`/api/borrowers?${qs}`, () => ({ borrowers: scoped(localStore(), filters, scope).borrowers }));
-  const [seg, setSeg] = useState("All");
+/** Drill-down filters arrive as URL params from KPI cards, funnels, charts and the roll-rate matrix. */
+function drill(params: URLSearchParams) {
+  const parts: string[] = [];
+  const tests: ((b: Borrower) => boolean)[] = [];
+  const disp = params.get("disposition");
+  if (disp) { parts.push(disp === "Paid" ? "Paid" : disp); tests.push((b) => b.disposition === disp); }
+  const link = params.get("link");
+  if (link === "shared") { parts.push("Payment link shared"); tests.push((b) => b.paymentLink !== "Not shared"); }
+  const ptp = params.get("ptp");
+  if (ptp) { parts.push(`Promises ${ptp}`); tests.push((b) => b.ptpOutcome === ptp); }
+  const stage = params.get("stage");
+  if (stage && Number(stage) > 0) { parts.push(`Reached ${STAGES[Number(stage)]}`); tests.push((b) => b.stage >= Number(stage)); }
+  const prev = params.get("prev"), bucket = params.get("bucket");
+  if (prev && bucket) { parts.push(`${prev} last month → ${bucket} now`); tests.push((b) => b.prevBucket === prev && bucketOf(b.dpd) === bucket); }
+  const roll = params.get("roll");
+  const idx = (x?: Bucket) => (x ? BUCKETS.indexOf(x) : -1);
+  if (roll === "cured") { parts.push("Cured since last month"); tests.push((b) => !!b.prevBucket && idx(bucketOf(b.dpd)) < idx(b.prevBucket)); }
+  if (roll === "forward") { parts.push("Rolled forward since last month"); tests.push((b) => !!b.prevBucket && idx(bucketOf(b.dpd)) > idx(b.prevBucket)); }
+  const sort = params.get("sort");
+  if (sort === "dpd") parts.push("Sorted by DPD");
+  if (sort === "outstanding") parts.push("Sorted by outstanding");
+  return { label: parts.join(" · "), test: (b: Borrower) => tests.every((t) => t(b)), sort, segment: params.get("segment") };
+}
+
+export default function BorrowersPage() {
+  return <Suspense fallback={<Loading />}><Borrowers /></Suspense>;
+}
+
+function Borrowers() {
+  const { qs, filters, scope, openBorrower } = useApp();
+  const params = useSearchParams();
+  const router = useRouter();
+  const dr = useMemo(() => drill(new URLSearchParams(params.toString())), [params]);
+  const { data, offline, error } = useApi<{ borrowers: Borrower[] }>(`/api/borrowers?${qs}`, () => ({ borrowers: scoped(localStore(), filters, scope).borrowers.map(publicBorrower) }));
+  const [seg, setSeg] = useState(dr.segment ?? "All");
   const [q, setQ] = useState("");
   const [disp, setDisp] = useState("all");
   const [page, setPage] = useState(0);
-  const [copied, setCopied] = useState("");
-  const rows = useMemo(() => (data?.borrowers ?? []).filter((b) =>
-    (seg === "All" || b.segment === seg) && (disp === "all" || b.disposition === disp) &&
-    (!q || `${b.name} ${b.loanId} ${b.id}`.toLowerCase().includes(q.toLowerCase()))), [data, seg, disp, q]);
-  if (loading || !data) return <Loading />;
+
+  useEffect(() => { const open = params.get("open"); if (open) openBorrower(open); }, [params, openBorrower]);
+  useEffect(() => setPage(0), [params, seg, q, disp]);
+
+  const rows = useMemo(() => {
+    const list = (data?.borrowers ?? []).filter((b) =>
+      dr.test(b) && (seg === "All" || b.segment === seg) && (disp === "all" || b.disposition === disp) &&
+      (!q || `${b.name} ${b.loanId} ${b.id}`.toLowerCase().includes(q.toLowerCase())));
+    if (dr.sort === "dpd") list.sort((a, b) => b.dpd - a.dpd);
+    else if (dr.sort === "outstanding") list.sort((a, b) => b.outstanding - a.outstanding);
+    return list;
+  }, [data, dr, seg, disp, q]);
+
+  if (error) return <ErrorNote text={error} />;
+  if (!data) return <Loading rows={1} />;
   const PAGE = 25, pages = Math.max(1, Math.ceil(rows.length / PAGE));
   const view = rows.slice(page * PAGE, page * PAGE + PAGE);
-  const canLink = CAN.sendLink.includes(user.role), canEsc = CAN.escalate.includes(user.role);
-
-  async function act(b: Borrower, action: "sendLink" | "escalate") {
-    const patch: Partial<Borrower> = action === "sendLink" ? { paymentLink: "Shared" } : { disposition: "Escalated", channel: "Human Desk" };
-    let ok = false;
-    try { ok = (await fetch("/api/borrowers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: b.id, action }) })).ok; } catch { /* offline */ }
-    // optimistic / local fallback: keep UI in sync even if the server call failed
-    setData((cur) => cur && { borrowers: cur.borrowers.map((x) => (x.id === b.id ? { ...x, ...patch } : x)) });
-    if (!ok) console.warn("Action stored locally only");
-  }
 
   function exportCsv() {
-    const head = ["Name", "Phone", "LoanID", "Segment", "EMI", "Outstanding", "DPD", "Disposition", "PaymentLink", "Experian", "Channel", "PTPDate", "PTPAmount"];
-    const lines = rows.map((b) => [b.name, b.phone, b.loanId, b.segment, b.emi, b.outstanding, b.dpd, b.disposition, b.paymentLink, b.experian, b.channel, b.ptpDate?.slice(0, 10) ?? "", b.ptpAmount ?? ""].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
-    const url = URL.createObjectURL(new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" }));
+    const head = ["Name", "Phone", "LoanID", "Product", "Portfolio", "Segment", "EMI", "Outstanding", "DPD", "Disposition", "PaymentLink", "Experian", "Channel", "PTPDate", "PTPAmount"];
+    const lines = rows.map((b) => [b.name, b.phone, b.loanId, b.product, b.portfolio, b.segment, b.emi, b.outstanding, b.dpd, b.disposition, b.paymentLink, b.experian, b.channel, b.ptpDate?.slice(0, 10) ?? "", b.ptpAmount ?? ""]
+      .map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+    const url = URL.createObjectURL(new Blob(["﻿" + [head.join(","), ...lines].join("\n")], { type: "text/csv" }));
     Object.assign(document.createElement("a"), { href: url, download: "borrowers.csv" }).click();
     URL.revokeObjectURL(url);
   }
@@ -50,47 +85,50 @@ export default function Borrowers() {
   return (
     <>
       <Offline show={offline} />
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex overflow-hidden rounded-lg border border-slate-300">
-          {SEGMENTS.map((s) => <button key={s} onClick={() => { setSeg(s); setPage(0); }} className={`px-3 py-1.5 text-sm ${seg === s ? "bg-indigo-600 text-white" : "bg-white hover:bg-slate-50"}`}>{s}</button>)}
+      {dr.label && (
+        <div className="flex items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-[13px]">
+          <span className="label">Showing</span><span className="font-medium">{dr.label}</span>
+          <button className="btn btn-ghost ml-auto min-h-7 px-2" onClick={() => router.replace("/borrowers")}><X size={14} aria-hidden="true" />Clear</button>
         </div>
-        <input className="input w-64" placeholder="Search name, loan ID…" value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} />
-        <select className="input" value={disp} onChange={(e) => { setDisp(e.target.value); setPage(0); }}>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="seg" role="group" aria-label="Segment">
+          {SEGMENTS.map((s) => <button key={s} aria-pressed={seg === s} onClick={() => setSeg(s)}>{s}</button>)}
+        </div>
+        <label className="sr-only" htmlFor="bq">Search</label>
+        <input id="bq" className="input w-64" placeholder="Search name or loan ID" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select aria-label="Disposition" className="input" value={disp} onChange={(e) => setDisp(e.target.value)}>
           <option value="all">All dispositions</option>
-          {["Paid", "PTP", "Partial", "Callback", "Dispute", "No Contact", "Escalated"].map((x) => <option key={x}>{x}</option>)}
+          {DISPOSITIONS.map((x) => <option key={x}>{x}</option>)}
         </select>
-        <button className="btn ml-auto" onClick={exportCsv}><Download size={14} /> Export CSV ({rows.length})</button>
+        <button className="btn ml-auto" onClick={exportCsv}><Download size={14} aria-hidden="true" />Export CSV</button>
       </div>
-      <Card title={`Borrower queue`}>
+      <Card pad={false}>
         <div className="overflow-x-auto">
-          <table className="w-full whitespace-nowrap">
-            <thead><tr><th>Borrower</th><th>Loan ID</th><th>Segment</th><th>EMI</th><th>Outstanding</th><th>DPD</th><th>Disposition</th><th>Payment link</th><th>Experian</th><th>Channel</th><th>PTP</th><th /></tr></thead>
-            <tbody className="divide-y">
+          <table className="table w-full whitespace-nowrap">
+            <thead><tr><th>Borrower</th><th>Loan ID</th><th>Product</th><th>Segment</th><th className="text-right">EMI</th><th className="text-right">Outstanding</th><th className="text-right">DPD</th><th>Disposition</th><th>Payment link</th><th>Experian</th><th>Channel</th><th>PTP</th></tr></thead>
+            <tbody>
               {view.map((b) => (
-                <tr key={b.id} className="hover:bg-slate-50">
-                  <td><div className="font-medium">{b.name}</div><div className="text-xs text-slate-500">{b.phone}</div></td>
-                  <td><button className="inline-flex items-center gap-1 hover:text-indigo-600" onClick={() => { navigator.clipboard?.writeText(b.loanId); setCopied(b.id); setTimeout(() => setCopied(""), 1200); }}>{b.loanId}{copied === b.id ? <Check size={12} /> : <Copy size={12} />}</button></td>
-                  <td className="text-xs">{b.segment}</td>
-                  <td>{inrFull(b.emi)}</td><td>{inrFull(b.outstanding)}</td><td>{b.dpd}</td>
-                  <td><Badge>{b.disposition}</Badge></td><td><Badge>{b.paymentLink}</Badge></td>
-                  <td>{b.experian} <Badge>{tier(b.experian)}</Badge></td>
-                  <td>{b.channel}</td>
-                  <td>{b.ptpDate ? `${d(b.ptpDate)} · ${inrFull(b.ptpAmount ?? 0)}` : "—"}</td>
-                  <td className="space-x-1">
-                    {canLink && b.paymentLink === "Not shared" && b.disposition !== "Paid" && <button className="btn" title="Send payment link" onClick={() => act(b, "sendLink")}><Link2 size={14} /></button>}
-                    {canEsc && b.disposition !== "Escalated" && b.disposition !== "Paid" && <button className="btn" title="Escalate to human desk" onClick={() => act(b, "escalate")}><Siren size={14} /></button>}
+                <tr key={b.id} className="cursor-pointer hover:bg-sunk/40" onClick={() => openBorrower(b.id)}>
+                  <td>
+                    <button className="text-left font-medium hover:text-brand hover:underline" onClick={(e) => { e.stopPropagation(); openBorrower(b.id); }}>{b.name}</button>
+                    <div className="font-mono text-[11.5px] text-muted">{b.phone}</div>
                   </td>
+                  <td className="font-mono text-[12.5px]">{b.loanId}</td>
+                  <td>{b.product}</td>
+                  <td className="text-[12.5px] text-ink-2">{b.segment}</td>
+                  <td className="text-right num">{inrFull(b.emi)}</td><td className="text-right num">{inrFull(b.outstanding)}</td><td className="text-right num">{b.dpd}</td>
+                  <td><Badge>{b.disposition}</Badge></td><td><Badge>{b.paymentLink}</Badge></td>
+                  <td className="num">{b.experian} <Badge>{tier(b.experian)}</Badge></td>
+                  <td>{b.channel}</td>
+                  <td className="num">{b.ptpDate ? `${d(b.ptpDate)} · ${inrFull(b.ptpAmount ?? 0)}` : "—"}</td>
                 </tr>
               ))}
-              {!view.length && <tr><td colSpan={12} className="py-8 text-center text-slate-500">No borrowers match.</td></tr>}
             </tbody>
           </table>
+          {!view.length && <Empty title="No borrowers match">Try clearing the drill-down or widening the filters above.</Empty>}
         </div>
-        <div className="mt-3 flex items-center justify-end gap-2 text-sm">
-          <button className="btn" disabled={page === 0} onClick={() => setPage(page - 1)}>Prev</button>
-          <span>Page {page + 1} / {pages}</span>
-          <button className="btn" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>Next</button>
-        </div>
+        <Pager page={page} pages={pages} setPage={setPage} total={rows.length} />
       </Card>
     </>
   );

@@ -1,10 +1,60 @@
 @import "tailwindcss";
 
-:root { --brand: #4f46e5; }
-body { background: #f4f5f9; color: #0f172a; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-.card { @apply rounded-xl border border-slate-200 bg-white p-4 shadow-sm; }
-.btn { @apply inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50; }
-.btn-primary { @apply border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700; }
-.input { @apply rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-500; }
-th { @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500; }
-td { @apply px-3 py-2 text-sm; }
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-ground: #f4f2ee;
+  --color-surface: #ffffff;
+  --color-sunk: #efece6;
+  --color-line: #e2ded6;
+  --color-line-strong: #cbc6bb;
+  --color-ink: #16181c;
+  --color-ink-2: #3a3e45;
+  --color-muted: #5c6068;
+
+  --color-brand: #0e6b50;
+  --color-brand-ink: #0a4f3b;
+  --color-brand-soft: #e1efe8;
+
+  --color-night: #101714;
+  --color-night-2: #1b2521;
+  --color-night-text: #b4c0ba;
+
+  --color-good: #0e6b50;
+  --color-good-soft: #e1efe8;
+  --color-warn: #9a520b;
+  --color-warn-soft: #fbedda;
+  --color-bad: #b42318;
+  --color-bad-soft: #fbe6e3;
+  --color-info: #2456c2;
+  --color-info-soft: #e5ecfa;
+}
+
+html { -webkit-font-smoothing: antialiased; }
+body { background: var(--color-ground); color: var(--color-ink); font-family: var(--font-sans); font-size: 14px; }
+.num { font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+
+@layer components {
+  .card { @apply rounded-lg border border-line bg-surface; }
+  .btn { @apply inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-line-strong bg-surface px-3 text-[13px] font-medium text-ink-2 transition-colors hover:bg-sunk disabled:cursor-not-allowed disabled:opacity-50; }
+  .btn-primary { @apply border-brand bg-brand text-white hover:bg-brand-ink; }
+  .btn-danger { @apply border-bad bg-bad text-white hover:bg-[#931c13]; }
+  .btn-ghost { @apply border-transparent bg-transparent hover:bg-sunk; }
+  .input { @apply min-h-9 rounded-md border border-line-strong bg-surface px-2.5 text-[13px] text-ink outline-none focus:border-brand; }
+  .label { @apply text-[11px] font-semibold uppercase tracking-[0.06em] text-muted; }
+  .table th { @apply border-b border-line px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.05em] text-muted whitespace-nowrap; }
+  .table td { @apply border-b border-line px-3 py-2.5 align-middle text-[13px]; }
+  .table tr:last-child td { @apply border-b-0; }
+  .seg { @apply inline-flex overflow-hidden rounded-md border border-line-strong bg-surface; }
+  .seg > button { @apply min-h-9 px-3 text-[13px] text-ink-2 hover:bg-sunk; }
+  .seg > button + button { @apply border-l border-line-strong; }
+  .seg > button[aria-pressed="true"] { @apply bg-ink text-white hover:bg-ink; }
+}
+
+@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+.toast-in { animation: toast-in 160ms ease-out; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .toast-in, .pulse-dot { animation: none; } }
