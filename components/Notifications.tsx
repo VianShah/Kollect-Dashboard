@@ -1,13 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bell, CalendarClock, Download, IndianRupee, Phone, PhoneMissed, Siren, Handshake, X } from "lucide-react";
+import { Bell, BellOff, CalendarClock, Download, IndianRupee, Phone, PhoneMissed, Siren, Handshake, X } from "lucide-react";
 import type { LiveEvent } from "@/lib/types";
 import { ago } from "@/lib/format";
 import { useApp } from "./ctx";
 
-interface Prefs { calls: boolean; outcomes: boolean; escalations: boolean; autoDownload: boolean }
-const DEFAULT_PREFS: Prefs = { calls: true, outcomes: true, escalations: true, autoDownload: true };
+interface Prefs { muted: boolean; calls: boolean; outcomes: boolean; escalations: boolean; autoDownload: boolean }
+const DEFAULT_PREFS: Prefs = { muted: false, calls: true, outcomes: true, escalations: true, autoDownload: true };
 const PREFS_KEY = "kollect.notify";
 
 interface Toast { id: number; tone: "bad" | "good" | "neutral"; title: string; detail: string; borrowerId?: string; file?: string }
@@ -57,6 +57,7 @@ export default function Notifications() {
 
   const handle = useCallback((fresh: LiveEvent[]) => {
     const p = prefsRef.current;
+    if (p.muted) return;
     const calls = fresh.filter((e) => e.type === "call");
     const escalations = fresh.filter((e) => e.type === "escalation");
     const outcomes = fresh.filter((e) => e.type === "payment" || e.type === "ptp" || e.type === "followup");
@@ -109,17 +110,21 @@ export default function Notifications() {
   return (
     <>
       <div className="relative" ref={panel}>
-        <button className="btn btn-ghost relative h-9 w-9 px-0" aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`} aria-expanded={open}
+        <button className="btn btn-ghost relative h-9 w-9 px-0" aria-label={`Notifications${prefs.muted ? " (muted)" : ""}${unread ? `, ${unread} unread` : ""}`} aria-expanded={open}
+          title={prefs.muted ? "Notifications are off" : "Notifications"}
           onClick={() => { setOpen(!open); setUnread(0); }}>
-          <Bell size={17} aria-hidden="true" />
+          {prefs.muted ? <BellOff size={17} aria-hidden="true" className="text-muted" /> : <Bell size={17} aria-hidden="true" />}
           {unread > 0 && <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-bad px-1 text-center text-[10px] font-semibold leading-4 text-white num">{unread > 99 ? "99+" : unread}</span>}
         </button>
         {open && (
           <div className="absolute right-0 top-11 z-40 w-[380px] max-w-[calc(100vw-24px)] overflow-hidden rounded-lg border border-line bg-surface shadow-[0_12px_40px_rgba(16,23,20,.14)]">
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div className="text-[14px] font-semibold">Activity</div>
-              <span className="text-[12px] text-muted">Updates every 5 seconds</span>
+              <button className="btn min-h-7 px-2 text-[12px]" onClick={() => updatePrefs({ muted: !prefs.muted })}>
+                {prefs.muted ? <><Bell size={13} aria-hidden="true" />Turn on</> : <><BellOff size={13} aria-hidden="true" />Turn off</>}
+              </button>
             </div>
+            {prefs.muted && <div className="border-b border-line bg-sunk/40 px-4 py-2 text-[12px] text-muted">Pop-up notifications and auto-downloads are off. Activity still appears below.</div>}
             <ul className="max-h-[360px] overflow-y-auto">
               {events.length === 0 && <li className="px-4 py-8 text-center text-[13px] text-muted">Nothing yet. Calls and escalations will appear here as they happen.</li>}
               {events.map((e) => {
@@ -138,7 +143,7 @@ export default function Notifications() {
                 );
               })}
             </ul>
-            <fieldset className="space-y-1.5 border-t border-line bg-sunk/40 px-4 py-3 text-[13px]">
+            <fieldset disabled={prefs.muted} className="space-y-1.5 disabled:opacity-50border-t border-line bg-sunk/40 px-4 py-3 text-[13px]">
               <legend className="label mb-1">Notify me about</legend>
               {([["calls", "Every completed call"], ["outcomes", "Payments, promises and call-back requests"], ["escalations", "Escalations to the human desk"], ["autoDownload", "Download the escalation file automatically"]] as const).map(([k, label]) => (
                 <label key={k} className="flex cursor-pointer items-center gap-2">
