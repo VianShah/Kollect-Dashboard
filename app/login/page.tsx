@@ -21,7 +21,9 @@ export default function Login() {
     setBusy(true); setErr("");
     const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) }).catch(() => null);
     setBusy(false);
-    if (res?.ok) { router.replace("/home"); router.refresh(); } else setErr(res ? "That username and password don't match." : "The server isn't responding.");
+    if (res?.ok) { router.replace("/home"); router.refresh(); return; }
+    const body = await res?.json().catch(() => null);
+    setErr(!res ? "The server isn't responding." : res.status === 401 ? "That username and password don't match." : body?.error ?? "Sign-in failed. Try again.");
   }
 
   return (
