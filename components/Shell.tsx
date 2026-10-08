@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X,
+  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning,
 } from "lucide-react";
 import { ACCESS, MODULES, ROLE_LABEL, can, type ModuleGroup } from "@/lib/roles";
 import type { Filters } from "@/lib/types";
@@ -13,7 +13,7 @@ import { localMeta } from "./local";
 import Notifications from "./Notifications";
 import BorrowerDrawer from "./BorrowerDrawer";
 
-const ICONS = { home: LayoutDashboard, performance: BarChart3, borrowers: Users, followups: CalendarDays, channels: Radio, audit: ShieldCheck, compliance: Scale, usage: Gauge, data: Database };
+const ICONS = { home: LayoutDashboard, performance: BarChart3, borrowers: Users, followups: CalendarDays, channels: Radio, audit: ShieldCheck, compliance: Scale, grievances: MessageSquareWarning, usage: Gauge, data: Database };
 const GROUPS: ModuleGroup[] = ["Monitor", "Act", "Assure", "Setup"];
 const RANGE_LABEL: Record<Filters["range"], string> = { today: "Today", "7d": "Last 7 days", "30d": "Last 30 days", mtd: "Month to date", custom: "Custom range" };
 const DEFAULT_FILTERS: Filters = { range: "30d", portfolio: "all", product: "all", channel: "all" };
@@ -32,7 +32,11 @@ export default function Shell({ user, children }: { user: SessionUser; children:
   const refreshMeta = useCallback(async () => {
     try { const r = await fetch("/api/meta", { cache: "no-store" }); if (r.ok) setMeta(await r.json()); } catch { /* keep local meta */ }
   }, []);
-  useEffect(() => { refreshMeta(); }, [refreshMeta]);
+  useEffect(() => {
+    refreshMeta();
+    const t = setInterval(refreshMeta, 60_000); // keeps the calling-hours status current
+    return () => clearInterval(t);
+  }, [refreshMeta]);
   useEffect(() => setNavOpen(false), [path]);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
@@ -117,7 +121,9 @@ export default function Shell({ user, children }: { user: SessionUser; children:
               </div>
               {meta.source === "mock" && meta.live && (
                 <span className="hidden items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[12px] text-ink-2 sm:inline-flex">
-                  <span className="pulse-dot h-2 w-2 rounded-full bg-[#1f9d6e]" aria-hidden="true" />Live traffic
+                  {meta.windowOpen
+                    ? <><span className="pulse-dot h-2 w-2 rounded-full bg-[#1f9d6e]" aria-hidden="true" />Live traffic</>
+                    : <><span className="h-2 w-2 rounded-full bg-muted" aria-hidden="true" />Paused · outside calling hours</>}
                 </span>
               )}
               {can(user.role, "demo") && (

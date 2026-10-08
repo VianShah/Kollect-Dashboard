@@ -4,7 +4,7 @@ import { audit, saveStore } from "@/lib/store";
 
 // GET ?ids=B1001,B1002 -> .xlsx escalation pack for the human desk.
 export async function GET(req: Request) {
-  const a = await requireUser();
+  const a = await requireUser("escalate");
   if ("res" in a) return a.res;
   const ids = (new URL(req.url).searchParams.get("ids") ?? "").split(",").filter(Boolean).slice(0, 50);
   const borrowers = a.store.borrowers.filter((b) => ids.includes(b.id) && (!a.scope.portfolio || b.portfolio === a.scope.portfolio));

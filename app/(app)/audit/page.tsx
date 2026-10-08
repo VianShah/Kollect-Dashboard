@@ -28,17 +28,21 @@ function Audit() {
   const [drop, setDrop] = useState(params.get("drop") ?? "all");
   const [minDur, setMinDur] = useState("");
   const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [lang, setLang] = useState("all");
+  const [noNoticeOnly, setNoNoticeOnly] = useState(false);
   const [page, setPage] = useState(0);
   const canHide = can(user.role, "hideCall");
 
   useEffect(() => { setDisp(params.get("classification") ?? "all"); setDrop(params.get("drop") ?? "all"); }, [params]);
-  useEffect(() => setPage(0), [campaign, disp, drop, minDur, hiddenOnly]);
+  useEffect(() => setPage(0), [campaign, disp, drop, minDur, hiddenOnly, lang, noNoticeOnly]);
 
   const campaigns = useMemo(() => [...new Set((data?.calls ?? []).map((c) => c.campaign))].sort(), [data]);
   const drops = useMemo(() => [...new Set((data?.calls ?? []).map((c) => c.dropReason).filter(Boolean))] as string[], [data]);
+  const langs = useMemo(() => [...new Set((data?.calls ?? []).map((c) => c.language).filter(Boolean))].sort() as string[], [data]);
   const rows = useMemo(() => (data?.calls ?? []).filter((c) =>
     (campaign === "all" || c.campaign === campaign) && (disp === "all" || c.classification === disp) && (drop === "all" || c.dropReason === drop) &&
-    (!minDur || c.durationSec >= Number(minDur)) && (!hiddenOnly || !c.visible)), [data, campaign, disp, drop, minDur, hiddenOnly]);
+    (lang === "all" || c.language === lang) && (!noNoticeOnly || (c.connected && c.disclosed === false)) &&
+    (!minDur || c.durationSec >= Number(minDur)) && (!hiddenOnly || !c.visible)), [data, campaign, disp, drop, minDur, hiddenOnly, lang, noNoticeOnly]);
 
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
@@ -73,12 +77,16 @@ function Audit() {
         </select>
         <label className="sr-only" htmlFor="mind">Minimum duration in seconds</label>
         <input id="mind" className="input w-40" type="number" min={0} placeholder="Min duration (s)" value={minDur} onChange={(e) => setMinDur(e.target.value)} />
+        <select aria-label="Language" className="input" value={lang} onChange={(e) => setLang(e.target.value)}>
+          <option value="all">All languages</option>{langs.map((l) => <option key={l}>{l}</option>)}
+        </select>
+        <label className="flex items-center gap-1.5 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-[var(--color-brand)]" checked={noNoticeOnly} onChange={(e) => setNoNoticeOnly(e.target.checked)} />AI / recording notice missing</label>
         {user.role !== "client" && <label className="flex items-center gap-1.5 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-[var(--color-brand)]" checked={hiddenOnly} onChange={(e) => setHiddenOnly(e.target.checked)} />Hidden from client only</label>}
       </div>
       <Card pad={false}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
-            <thead><tr><th>Date / time (IST)</th><th>Phone</th><th>Loan ID</th><th>Call ID</th><th>Campaign</th><th className="text-right">Duration</th><th>Classification</th><th>Drop-off</th><th>Client view</th></tr></thead>
+            <thead><tr><th>Date / time (IST)</th><th>Phone</th><th>Loan ID</th><th>Call ID</th><th>Campaign</th><th className="text-right">Duration</th><th>Language</th><th>Classification</th><th>Drop-off</th><th>AI / recording notice</th><th>Recording</th><th>Client view</th></tr></thead>
             <tbody>
               {rows.slice(page * PAGE, page * PAGE + PAGE).map((c) => (
                 <tr key={c.id} className="hover:bg-sunk/40">
@@ -88,8 +96,17 @@ function Audit() {
                   <td className="font-mono text-[12px]">{c.callId}</td>
                   <td className="font-mono text-[12px] text-ink-2">{c.campaign}</td>
                   <td className="text-right num">{dur(c.durationSec)}</td>
+                  <td className="text-[12.5px]">{c.language ?? "—"}</td>
                   <td><Badge>{c.classification}</Badge></td>
                   <td className="text-[12.5px] text-muted">{c.dropReason?.replace(/_/g, " ") ?? "—"}</td>
+                  <td className="text-[12.5px]">
+                    {!c.connected ? <span className="text-muted">—</span>
+                      : c.disclosed === false ? <span className="rounded bg-bad-soft px-1.5 py-0.5 text-[11.5px] font-medium text-bad">Not played</span>
+                      : c.disclosed ? <span className="text-ink-2">Played</span> : <span className="text-muted">Unknown</span>}
+                  </td>
+                  <td className="text-[12.5px]">
+                    {c.recordingUrl ? <a className="text-brand hover:underline" href={c.recordingUrl} target="_blank" rel="noopener noreferrer">Listen</a> : <span className="text-muted">Not linked</span>}
+                  </td>
                   <td>
                     {canHide
                       ? <button onClick={() => toggle(c)} className="inline-flex items-center gap-1.5" aria-label={c.visible ? "Hide from client" : "Show to client"}>

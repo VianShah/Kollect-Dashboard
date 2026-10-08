@@ -1,5 +1,6 @@
 "use client";
 // Offline fallback: the same seeded mock the server starts from, computed in the browser.
+import { DEFAULT_LANGUAGES, LANGUAGES } from "@/lib/languages";
 import { SCENARIOS, campaignsFor, generateStore } from "@/lib/mock";
 import type { Store } from "@/lib/types";
 import type { Meta } from "./ctx";
@@ -13,6 +14,10 @@ export const localMeta = (): Meta => ({
   portfolios: SCENARIOS.nbfc.portfolios,
   products: SCENARIOS.nbfc.products.map((p) => p.name),
   campaigns: campaignsFor("nbfc"),
+  languages: LANGUAGES,
+  enabledLanguages: DEFAULT_LANGUAGES,
+  unservedBorrowers: 0,
+  windowOpen: true,
   source: "mock",
   live: false,
   clientPortfolio: null,

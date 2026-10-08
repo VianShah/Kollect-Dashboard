@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { CalendarClock, Copy, Eye, IndianRupee, Link2, Mail, MessageCircle, MessageSquare, Phone, Siren, X } from "lucide-react";
+import { CalendarClock, Copy, Eye, IndianRupee, Link2, Mail, MessageCircle, MessageSquare, MessageSquareWarning, Phone, Siren, X } from "lucide-react";
 import { computeBorrowerProfile, type TimelineItem } from "@/lib/metrics";
-import { ESCALATION_REASONS } from "@/lib/mock";
+import { ESCALATION_REASONS, GRIEVANCE_CATEGORIES, GRIEVANCE_SLA_DAYS } from "@/lib/mock";
 import { REVEAL_REASONS, can } from "@/lib/roles";
 import { dt, inrFull } from "@/lib/format";
 import { useApp } from "./ctx";
@@ -23,7 +23,7 @@ export default function BorrowerDrawer({ id, onClose }: { id: string; onClose: (
   const [p, setP] = useState<Profile | null>(null);
   const [missing, setMissing] = useState(false);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All");
-  const [panel, setPanel] = useState<null | "reveal" | "followup" | "escalate">(null);
+  const [panel, setPanel] = useState<null | "reveal" | "followup" | "escalate" | "complaint">(null);
   const [revealed, setRevealed] = useState<{ phone: string; until: number } | null>(null);
   const [, setTick] = useState(0);
   const [msg, setMsg] = useState("");
@@ -74,6 +74,8 @@ export default function BorrowerDrawer({ id, onClose }: { id: string; onClose: (
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <Badge>{b.disposition}</Badge><Badge>{b.paymentLink}</Badge>
+                  <span className="rounded bg-sunk px-1.5 py-0.5 text-[11.5px] font-medium text-ink-2">{b.language}</span>
+                  {b.disposition === "Dispute" && <span className="rounded bg-warn-soft px-1.5 py-0.5 text-[11.5px] font-medium text-warn">Outreach paused</span>}
                   {b.dnd && <span className="rounded bg-bad-soft px-1.5 py-0.5 text-[11.5px] font-medium text-bad">Do not call</span>}
                   {!b.waConsent && <span className="rounded bg-warn-soft px-1.5 py-0.5 text-[11.5px] font-medium text-warn">No WhatsApp opt-in</span>}
                 </div>
@@ -229,7 +231,28 @@ export default function BorrowerDrawer({ id, onClose }: { id: string; onClose: (
                 <button className="btn btn-danger">Escalate</button>
               </form>
             )}
+            {panel === "complaint" && (
+              <form className="mb-3 grid gap-2" onSubmit={async (e) => {
+                e.preventDefault();
+                const fd = new FormData(e.currentTarget);
+                await act("/api/grievances", { borrowerId: b.id, category: fd.get("category"), detail: fd.get("detail") }, `Complaint logged. It must be resolved within ${GRIEVANCE_SLA_DAYS} days.`);
+              }}>
+                <label className="text-[12px] text-muted">Category
+                  <select name="category" className="input mt-1 block w-full" required defaultValue="">
+                    <option value="" disabled>Choose a category</option>
+                    {GRIEVANCE_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label className="text-[12px] text-muted">What happened
+                  <textarea name="detail" required minLength={5} maxLength={1000} rows={3} className="input mt-1 block w-full" placeholder="Describe the complaint in the borrower's words" />
+                </label>
+                <div><button className="btn btn-primary">Log complaint</button></div>
+              </form>
+            )}
             <div className="flex flex-wrap gap-2">
+              {can(user.role, "grievance") && (
+                <button className="btn" aria-expanded={panel === "complaint"} onClick={() => setPanel(panel === "complaint" ? null : "complaint")}><MessageSquareWarning size={14} aria-hidden="true" />Log complaint</button>
+              )}
               {can(user.role, "sendLink") && b.disposition !== "Paid" && (
                 <button className="btn btn-primary" onClick={() => act("/api/borrowers", { id: b.id, action: "sendLink" }, "Payment link sent on WhatsApp.")}><Link2 size={14} aria-hidden="true" />Send payment link</button>
               )}

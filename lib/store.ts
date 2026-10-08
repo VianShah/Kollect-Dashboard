@@ -1,8 +1,10 @@
 // Server-only in-memory store, persisted to data/store.json (swap for a database later).
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { BANDS, DAY, istMidnight } from "./time";
-import { ESCALATION_REASONS, FOLLOWUP_NOTES, STORE_VERSION, campaignsFor, connectChance, generateStore, pickCampaign } from "./mock";
+import { DAY, istMidnight } from "./time";
+import { ESCALATION_REASONS, FOLLOWUP_NOTES, STORE_VERSION, campaignsFor, connectChance, followupSlot, generateStore, pickCampaign } from "./mock";
+import { canContact, clampRules, windowOpen } from "./contact";
 import type { AuditEntry, Disposition, LiveEvent, Role, ScenarioKey, Store } from "./types";
 
 const FILE = path.join(process.cwd(), "data", "store.json");
@@ -13,7 +15,7 @@ export function getStore(): Store {
   try {
     if (fs.existsSync(FILE)) {
       const s = JSON.parse(fs.readFileSync(FILE, "utf8")) as Store;
-      if (s.v === STORE_VERSION) g.__kollect = s;
+      if (s.v === STORE_VERSION) { s.compliance = clampRules(s.compliance); g.__kollect = s; }
     }
   } catch { /* fall through to mock */ }
   return (g.__kollect ??= generateStore());
@@ -34,8 +36,11 @@ export function saveStore(s: Store, opts: { throttle?: boolean } = {}) {
 
 export function loadScenario(scenario: ScenarioKey) {
   const prev = g.__kollect;
-  const s = generateStore(scenario);
-  if (prev) { s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; }
+  const s = generateStore(scenario, Date.now(), prev?.languages);
+  if (prev) {
+    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro;
+    s.grievances = prev.grievances; s.grievanceSeq = prev.grievanceSeq;
+  }
   saveStore(s);
   return s;
 }
@@ -47,11 +52,27 @@ export function addEvent(s: Store, e: Omit<LiveEvent, "id" | "ts"> & { ts?: stri
   return ev;
 }
 
+const digest = (e: Omit<AuditEntry, "hash">) =>
+  crypto.createHash("sha256").update([e.prev, e.id, e.ts, e.user, e.role, e.action, e.target, e.detail].join("|")).digest("hex");
+
+/** Each entry carries the hash of the one before it, so an edited or removed entry breaks the chain. */
 export function audit(s: Store, user: { username: string; role: Role }, action: string, target: string, detail = "") {
-  const entry: AuditEntry = { id: ++s.auditSeq, ts: new Date().toISOString(), user: user.username, role: user.role, action, target, detail };
+  const base = { id: ++s.auditSeq, ts: new Date().toISOString(), user: user.username, role: user.role, action, target, detail, prev: s.audit[0]?.hash ?? "genesis" };
+  const entry: AuditEntry = { ...base, hash: digest(base) };
   s.audit.unshift(entry);
-  if (s.audit.length > 2000) s.audit.length = 2000;
+  if (s.audit.length > 20000) s.audit.length = 20000;
   return entry;
+}
+
+/** True when every entry still matches its hash and points at its predecessor. */
+export function verifyAudit(s: Store): boolean {
+  const list = s.audit;
+  for (let i = 0; i < list.length; i++) {
+    const { hash, ...rest } = list[i];
+    if (digest(rest) !== hash) return false;
+    if (i < list.length - 1 && list[i + 1].hash !== rest.prev) return false;
+  }
+  return true;
 }
 
 const pick = <T,>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
@@ -63,8 +84,9 @@ export function tick(s: Store): boolean {
   const elapsed = now - s.demo.lastTick;
   if (elapsed < 3500) return false;
   s.demo.lastTick = now;
+  if (!windowOpen(s.compliance, now)) return false; // like a real dialler, nothing goes out after hours
   const n = Math.min(3, Math.max(1, Math.floor(elapsed / 4500)));
-  const camps = campaignsFor(s.scenario);
+  const camps = campaignsFor(s.scenario, s.languages);
   for (let i = 0; i < n; i++) simulateCall(s, camps, now - (n - 1 - i) * 1200);
   return true;
 }
@@ -74,6 +96,7 @@ function simulateCall(s: Store, camps: ReturnType<typeof campaignsFor>, t: numbe
   const b = pool[Math.floor(Math.random() * pool.length)];
   if (!b) return;
   const camp = pickCampaign(b, camps, Math.random);
+  if (!canContact(s, b, camp.channel === "WhatsApp" ? "whatsapp" : "voice", t).ok) return;
   const hour = ((t + 330 * 60_000) % DAY) / 3_600_000;
   const connected = Math.random() < connectChance(b, camp.channel, hour);
   const x = Math.random();
@@ -87,6 +110,7 @@ function simulateCall(s: Store, camps: ReturnType<typeof campaignsFor>, t: numbe
     callId: `call_${Math.floor(Math.random() * 36 ** 6).toString(36)}`, campaign: camp.code, product: b.product, portfolio: b.portfolio,
     channel: camp.channel, durationSec, classification: cls, connected,
     dropReason: connected ? undefined : pick(["no_answer", "switched_off", "customer_busy", "call_rejected"]), attemptNo, visible: true,
+    language: camp.language === "Multilingual" ? b.language : camp.language, disclosed: true,
   });
   const ref = { portfolio: b.portfolio, borrowerId: b.id, loanId: b.loanId, ts };
   addEvent(s, {
@@ -106,17 +130,17 @@ function simulateCall(s: Store, camps: ReturnType<typeof campaignsFor>, t: numbe
     Object.assign(b, { disposition: "Escalated", stage: Math.max(b.stage, 2), channel: "Human Desk", escalatedAt: ts, escalationReason: pick(ESCALATION_REASONS) });
     addEvent(s, { ...ref, type: "escalation", title: `Escalated to human desk · ${b.name}`, detail: `${b.escalationReason} · ${b.loanId}` });
   } else if (cls === "Callback") {
-    const band = BANDS[b.prefBand ?? 4];
-    const at = istMidnight(t + (1 + Math.floor(Math.random() * 3)) * DAY) + (band.from + Math.random() * 1.5) * 3_600_000;
     const note = pick(FOLLOWUP_NOTES);
+    const at = followupSlot(note, b.prefBand, t, Math.random, 1 + Math.floor(Math.random() * 3));
     s.followUps.push({
       id: `F${s.eventSeq}_${Math.floor(Math.random() * 1e5)}`, borrowerId: b.id, loanId: b.loanId, name: b.name, portfolio: b.portfolio, product: b.product,
-      at: new Date(Math.round(at / 900_000) * 900_000).toISOString(), requestedAt: ts, requestedVia: camp.channel, note, status: "Scheduled",
+      at: new Date(at).toISOString(), requestedAt: ts, requestedVia: camp.channel, note, status: "Scheduled",
     });
     s.followUps.sort((a, c) => a.at.localeCompare(c.at));
     Object.assign(b, { disposition: "Callback", stage: Math.max(b.stage, 1) });
     addEvent(s, { ...ref, type: "followup", title: `Call-back requested · ${b.name}`, detail: note });
   } else if (cls === "Dispute" || cls === "Partial") {
     Object.assign(b, { disposition: cls, stage: Math.max(b.stage, cls === "Partial" ? 3 : 2) });
+    if (cls === "Dispute") Object.assign(b, { ptpDate: undefined, ptpAmount: undefined, ptpOutcome: undefined }); // a disputed account has no live promise
   }
 }

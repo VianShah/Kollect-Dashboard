@@ -37,7 +37,7 @@ export default function Login() {
         </div>
         <dl className="grid max-w-md grid-cols-3 gap-6 border-t border-white/10 pt-6 text-[12px]">
           <div><dt>Channels</dt><dd className="mt-1 text-[14px] text-white">Voice · WhatsApp · Human</dd></div>
-          <div><dt>Languages</dt><dd className="mt-1 text-[14px] text-white">Hindi · English</dd></div>
+          <div><dt>Languages</dt><dd className="mt-1 text-[14px] text-white">Hindi · English · and 8 more</dd></div>
           <div><dt>Guardrails</dt><dd className="mt-1 text-[14px] text-white">Hours, caps, consent</dd></div>
         </dl>
       </section>

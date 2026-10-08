@@ -89,6 +89,7 @@ const BADGE: Record<string, string> = {
   Read: "bg-good-soft text-good", Replied: "bg-good-soft text-good", Clicked: "bg-good-soft text-good", Opened: "bg-good-soft text-good", Visible: "bg-good-soft text-good", Prime: "bg-good-soft text-good",
   PTP: "bg-info-soft text-info", Partial: "bg-info-soft text-info", Shared: "bg-info-soft text-info", Scheduled: "bg-info-soft text-info", Delivered: "bg-info-soft text-info",
   Callback: "bg-warn-soft text-warn", "Link clicked": "bg-warn-soft text-warn", Dispute: "bg-warn-soft text-warn", "Near-prime": "bg-warn-soft text-warn",
+  Open: "bg-warn-soft text-warn", "In progress": "bg-info-soft text-info", Resolved: "bg-good-soft text-good",
   Escalated: "bg-bad-soft text-bad", Missed: "bg-bad-soft text-bad", Failed: "bg-bad-soft text-bad", Subprime: "bg-bad-soft text-bad",
 };
 export const Badge = ({ children }: { children: string }) => (

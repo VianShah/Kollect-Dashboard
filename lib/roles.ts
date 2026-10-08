@@ -1,6 +1,6 @@
 import type { Role } from "./types";
 
-export type ModuleKey = "home" | "performance" | "borrowers" | "followups" | "channels" | "audit" | "compliance" | "usage" | "data";
+export type ModuleKey = "home" | "performance" | "borrowers" | "followups" | "channels" | "audit" | "compliance" | "grievances" | "usage" | "data";
 export type ModuleGroup = "Monitor" | "Act" | "Assure" | "Setup";
 
 export const MODULES: { key: ModuleKey; label: string; href: string; group: ModuleGroup; filters: boolean }[] = [
@@ -11,22 +11,25 @@ export const MODULES: { key: ModuleKey; label: string; href: string; group: Modu
   { key: "followups", label: "Follow-ups", href: "/followups", group: "Act", filters: true },
   { key: "audit", label: "Call Audit", href: "/audit", group: "Assure", filters: true },
   { key: "compliance", label: "Compliance", href: "/compliance", group: "Assure", filters: true },
+  { key: "grievances", label: "Grievances", href: "/grievances", group: "Assure", filters: false },
   { key: "usage", label: "Usage", href: "/usage", group: "Assure", filters: true },
   { key: "data", label: "Data", href: "/data", group: "Setup", filters: false },
 ];
 
 export const ACCESS: Record<Role, ModuleKey[]> = {
-  admin: ["home", "performance", "channels", "borrowers", "followups", "audit", "compliance", "usage", "data"],
-  supervisor: ["home", "performance", "channels", "borrowers", "followups", "audit", "compliance", "usage"],
-  operator: ["home", "borrowers", "followups", "audit"],
+  admin: ["home", "performance", "channels", "borrowers", "followups", "audit", "compliance", "grievances", "usage", "data"],
+  supervisor: ["home", "performance", "channels", "borrowers", "followups", "audit", "compliance", "grievances", "usage"],
+  operator: ["home", "borrowers", "followups", "audit", "grievances"],
   client: ["home", "performance", "borrowers", "followups", "compliance", "usage"],
 };
 
 export type Action =
   | "sendLink" | "escalate" | "editCapacity" | "hideCall" | "upload"
-  | "revealPii" | "editCompliance" | "viewAudit" | "demo" | "followup";
+  | "revealPii" | "editCompliance" | "viewAudit" | "demo" | "followup" | "grievance" | "editLanguages";
 
 export const CAN: Record<Action, Role[]> = {
+  grievance: ["admin", "supervisor", "operator"],
+  editLanguages: ["admin", "supervisor"],
   sendLink: ["admin", "supervisor", "operator"],
   escalate: ["admin", "supervisor", "operator"],
   followup: ["admin", "supervisor", "operator"],

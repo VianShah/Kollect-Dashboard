@@ -1,7 +1,13 @@
 import * as XLSX from "xlsx";
 import type { Agent, Borrower, Call, Channel, Disposition, FollowUp, LinkStatus, Segment, Store, Touch, TouchStatus } from "./types";
 import { bucketOf, maskPhone } from "./mock";
+import { normaliseLanguage } from "./languages";
 import { computeBorrowerProfile } from "./metrics";
+
+const MAX_ROWS = 100_000;
+/** Stops spreadsheet apps from running text that starts with = + - or @ as a formula. */
+const safeCell = (v: unknown) => (typeof v === "string" && /^[=+\-@\t\r]/.test(v) ? `'${v}` : v);
+const safeRows = (rows: Record<string, unknown>[]) => rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, safeCell(v)])));
 
 type Row = Record<string, unknown>;
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -38,6 +44,8 @@ const ALIASES: Record<string, string[]> = {
   dropReason: ["dropreason", "dropoffreason", "reason", "disconnectreason"],
   attemptNo: ["attemptno", "attempt", "attemptnumber"],
   visible: ["visible", "clientvisible", "visibility"],
+  disclosed: ["disclosed", "disclosureplayed", "recordingnotice"],
+  recordingUrl: ["recordingurl", "recording", "recordinglink"],
   template: ["template", "messagetype"],
   text: ["text", "message", "body"],
   at: ["at", "followupat", "callbackat", "scheduledfor"],
@@ -78,8 +86,9 @@ const toSegment = (v: unknown, dpd: number): Segment => {
   const n = norm(str(v));
   if (n.includes("pre")) return "Pre Due";
   if (n.includes("3090")) return "Post Due (30–90)";
+  if (n.includes("postdue90") || n.includes("npa")) return "Post Due (90+)";
   if (n.includes("030")) return "Post Due (0–30)";
-  return dpd <= 0 ? "Pre Due" : dpd <= 30 ? "Post Due (0–30)" : "Post Due (30–90)";
+  return dpd <= 0 ? "Pre Due" : dpd <= 30 ? "Post Due (0–30)" : dpd <= 90 ? "Post Due (30–90)" : "Post Due (90+)";
 };
 const toLink = (v: unknown): LinkStatus => {
   const n = norm(str(v));
@@ -105,6 +114,7 @@ export function parseWorkbook(buf: Buffer): ParseResult {
   const out: ParseResult = { report: [] };
   const run = <T,>(name: string, rows: Row[] | undefined, map: (row: Row, i: number) => T | string): T[] | undefined => {
     if (!rows) return undefined;
+    if (rows.length > MAX_ROWS) { out.report.push({ sheet: name, rows: rows.length, imported: 0, errors: [`More than ${MAX_ROWS.toLocaleString("en-IN")} rows. Split the file and import in parts.`] }); return undefined; }
     const errors: string[] = [];
     const list: T[] = [];
     rows.forEach((row, i) => {
@@ -134,7 +144,7 @@ export function parseWorkbook(buf: Buffer): ParseResult {
       segment: toSegment(field(row, "segment"), dpd),
       portfolio: str(field(row, "portfolio"), "Default"),
       region: str(field(row, "region"), "—"),
-      language: str(field(row, "language"), "Hindi"),
+      language: normaliseLanguage(str(field(row, "language"), "Hindi")),
       emi,
       outstanding: numv(outstanding),
       dpd,
@@ -145,7 +155,7 @@ export function parseWorkbook(buf: Buffer): ParseResult {
       experian: numv(field(row, "experian"), 700),
       channel: toChannel(field(row, "channel")),
       dnd: yes(field(row, "dnd"), false),
-      waConsent: yes(field(row, "waConsent"), true),
+      waConsent: yes(field(row, "waConsent"), false), // no recorded opt-in means no WhatsApp
       ptpDate: iso(field(row, "ptpDate")),
       ptpAmount: numv(field(row, "ptpAmount")) || undefined,
       ptpOutcome: disposition === "PTP" ? "pending" : disposition === "Paid" ? "kept" : undefined,
@@ -174,6 +184,9 @@ export function parseWorkbook(buf: Buffer): ParseResult {
       dropReason: connected ? undefined : str(field(row, "dropReason"), "no_answer"),
       attemptNo: numv(field(row, "attemptNo"), 1),
       visible: yes(field(row, "visible"), true),
+      language: str(field(row, "language")) ? normaliseLanguage(str(field(row, "language"))) : undefined,
+      disclosed: str(field(row, "disclosed")) ? yes(field(row, "disclosed"), true) : undefined,
+      recordingUrl: str(field(row, "recordingUrl")).startsWith("https://") ? str(field(row, "recordingUrl")) : undefined,
     } satisfies Call;
   })?.sort((a, b) => b.ts.localeCompare(a.ts));
 
@@ -210,7 +223,7 @@ export function parseWorkbook(buf: Buffer): ParseResult {
     return {
       id: `A${i + 1}`, name: str(field(row, "agentName"), code), code,
       business: str(field(row, "portfolio"), "Kollect"), product: str(field(row, "product"), "—"),
-      language: str(field(row, "language"), "—"), voice: str(field(row, "voice"), "—"),
+      language: normaliseLanguage(str(field(row, "language"), "—")), voice: str(field(row, "voice"), "—"),
       channel: toChannel(field(row, "channel")), live: Math.min(numv(field(row, "live")), max), max, resolved: 0, open: 0,
     } satisfies Agent;
   });
@@ -224,11 +237,11 @@ export function buildTemplate(): Buffer {
   const add = (name: string, rows: Row[]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name);
   add("Borrowers", [
     { BorrowerID: "B1001", Name: "Aarav Sharma", Phone: "9876543210", LoanID: "LN2024000123", Product: "Personal Loan", Segment: "Post Due (0–30)", Portfolio: "Alpha NBFC", Region: "North", Language: "Hindi", EMI: 12500, Outstanding: 245000, DPD: 12, PrevDPD: 0, Disposition: "PTP", PaymentLink: "Link clicked", ExperianScore: 702, Channel: "AI Voice", DoNotCall: "no", WhatsAppConsent: "yes", PTPDate: "2026-10-10", PTPAmount: 12500, RecoveredAmount: 0, RecoveredAt: "" },
-    { BorrowerID: "B1002", Name: "Priya Iyer", Phone: "9123456780", LoanID: "LN2024000456", Product: "Two-Wheeler Loan", Segment: "Pre Due", Portfolio: "Alpha NBFC", Region: "South", Language: "English", EMI: 8200, Outstanding: 98000, DPD: 0, PrevDPD: 14, Disposition: "Paid", PaymentLink: "Paid via link", ExperianScore: 781, Channel: "WhatsApp", DoNotCall: "no", WhatsAppConsent: "yes", PTPDate: "", PTPAmount: "", RecoveredAmount: 8200, RecoveredAt: "2026-10-02" },
+    { BorrowerID: "B1002", Name: "Priya Iyer", Phone: "9123456780", LoanID: "LN2024000456", Product: "Two-Wheeler Loan", Segment: "Pre Due", Portfolio: "Alpha NBFC", Region: "South", Language: "Tamil", EMI: 8200, Outstanding: 98000, DPD: 0, PrevDPD: 14, Disposition: "Paid", PaymentLink: "Paid via link", ExperianScore: 781, Channel: "WhatsApp", DoNotCall: "no", WhatsAppConsent: "yes", PTPDate: "", PTPAmount: "", RecoveredAmount: 8200, RecoveredAt: "2026-10-02" },
   ]);
   add("Calls", [
-    { Timestamp: "2026-10-02 11:20", LoanID: "LN2024000123", CallID: "call_abc123", Campaign: "KOLLECT_PL_PD30_VOICE_HI", Product: "Personal Loan", Portfolio: "Alpha NBFC", Channel: "AI Voice", DurationSec: 142, Disposition: "PTP", DropReason: "", AttemptNo: 2, Visible: "yes" },
-    { Timestamp: "2026-10-02 11:42", LoanID: "LN2024000456", CallID: "call_abc124", Campaign: "KOLLECT_TW_PD30_VOICE_EN", Product: "Two-Wheeler Loan", Portfolio: "Alpha NBFC", Channel: "AI Voice", DurationSec: 0, Disposition: "No Contact", DropReason: "no_answer", AttemptNo: 1, Visible: "yes" },
+    { Timestamp: "2026-10-02 11:20", LoanID: "LN2024000123", CallID: "call_abc123", Campaign: "KOLLECT_PL_PD1_30_VOICE_HI", Product: "Personal Loan", Portfolio: "Alpha NBFC", Channel: "AI Voice", DurationSec: 142, Disposition: "PTP", DropReason: "", AttemptNo: 2, Visible: "yes", Language: "Hindi", Disclosed: "yes" },
+    { Timestamp: "2026-10-02 11:42", LoanID: "LN2024000456", CallID: "call_abc124", Campaign: "KOLLECT_TW_PD1_30_VOICE_EN", Product: "Two-Wheeler Loan", Portfolio: "Alpha NBFC", Channel: "AI Voice", DurationSec: 0, Disposition: "No Contact", DropReason: "no_answer", AttemptNo: 1, Visible: "yes", Language: "English", Disclosed: "yes" },
   ]);
   add("Messages", [
     { Timestamp: "2026-10-01 18:05", LoanID: "LN2024000123", Channel: "WhatsApp", Template: "Payment link", Status: "Read", Text: "Hi Aarav, pay your ₹12,500 EMI securely: pay.kollect.in/000123" },
@@ -237,7 +250,7 @@ export function buildTemplate(): Buffer {
     { LoanID: "LN2024000123", FollowUpAt: "2026-10-09 18:00", Timestamp: "2026-10-02 11:20", Channel: "AI Voice", Note: "Call after salary credit", Status: "Scheduled" },
   ]);
   add("Agents", [
-    { AgentName: "Personal Loan · Voice HI", Code: "KOLLECT_PL_PD30_VOICE_HI", Product: "Personal Loan", Language: "Hindi", Voice: "Aarohi", Channel: "AI Voice", Live: 0, Max: 3 },
+    { AgentName: "Personal Loan · Voice Hindi", Code: "KOLLECT_PL_PD1_30_VOICE_HI", Product: "Personal Loan", Language: "Hindi", Voice: "Aarohi", Channel: "AI Voice", Live: 0, Max: 3 },
   ]);
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
@@ -262,9 +275,9 @@ export function buildEscalationFile(store: Store, borrowers: Borrower[]): Buffer
       Outcome: c.connected ? c.classification : `Not answered (${c.dropReason})`, "Duration (s)": c.durationSec,
     })));
   const wb = XLSX.utils.book_new();
-  const s1 = XLSX.utils.json_to_sheet(summary);
+  const s1 = XLSX.utils.json_to_sheet(safeRows(summary));
   s1["!cols"] = [18, 20, 15, 16, 18, 16, 16, 6, 12, 10, 30, 30, 11, 11, 10, 80].map((wch) => ({ wch }));
   XLSX.utils.book_append_sheet(wb, s1, "Escalations");
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(history), "Call history");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(safeRows(history)), "Call history");
   return XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }

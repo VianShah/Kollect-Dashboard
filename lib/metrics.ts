@@ -1,6 +1,6 @@
 import type { Borrower, Bucket, Call, Filters, FollowUp, Scope, Store, Touch } from "./types";
 import { BANDS, DAY, bandOf, dayList, istDay, istHour, istMidnight, istMonthEnd, istMonthStart, istWeekday } from "./time";
-import { bucketOf } from "./mock";
+import { bucketOf, languageUnserved } from "./mock";
 
 const all = (v?: string) => !v || v === "all";
 const ratio = (a: number, b: number) => (b ? (a / b) * 100 : 0);
@@ -210,14 +210,16 @@ export function computeForecast(store: Store, f: Filters, scope: Scope) {
 
   const actualByDay = new Map<string, number>();
   let organicMtd = 0, organic30 = 0;
+  // Baseline = payments that did not come from a kept promise, so promises are not counted twice.
   for (const b of borrowers) {
     if (!b.recoveredAt) continue;
     const t = Date.parse(b.recoveredAt);
+    const unpromised = b.disposition === "Paid" && b.ptpOutcome !== "kept";
     if (t >= ms && t <= now) {
       actualByDay.set(istDay(t), (actualByDay.get(istDay(t)) ?? 0) + b.recoveredAmount);
-      if (b.disposition === "Paid") organicMtd += b.recoveredAmount;
+      if (unpromised) organicMtd += b.recoveredAmount;
     }
-    if (t > now - 30 * DAY && b.disposition === "Paid") organic30 += b.recoveredAmount;
+    if (t > now - 30 * DAY && unpromised) organic30 += b.recoveredAmount;
   }
   // Early in the month a few days of data are noisy, so lean on the trailing 30-day run-rate.
   const organicDaily = elapsed < 7 ? organic30 / 30 : organicMtd / elapsed;
@@ -249,8 +251,12 @@ export function computeForecast(store: Store, f: Filters, scope: Scope) {
   const series = days.map((date) => {
     if (date < today) { cum += actualByDay.get(date) ?? 0; return { date, actual: cum }; }
     if (date === today) {
-      cum += actualByDay.get(date) ?? 0; proj = lo = hi = cum;
-      return { date, actual: cum, projected: cum, range: [cum, cum] as [number, number] };
+      cum += actualByDay.get(date) ?? 0;
+      const p = ptpByDay.get(date); // promises due or overdue count toward today
+      proj = cum + (p?.expected ?? 0);
+      lo = cum + (p ? p.amount * Math.max(0, avgKeep - 0.1) : 0);
+      hi = cum + (p ? p.amount * Math.min(1, avgKeep + 0.1) : 0);
+      return { date, actual: cum, projected: Math.round(proj), range: [Math.round(lo), Math.round(hi)] as [number, number] };
     }
     const p = ptpByDay.get(date);
     proj += organicDaily + (p?.expected ?? 0);
@@ -280,7 +286,7 @@ export function computeForecast(store: Store, f: Filters, scope: Scope) {
   };
 }
 
-const BUCKETS: Bucket[] = ["Current", "1–30", "31–60", "61–90"];
+const BUCKETS: Bucket[] = ["Current", "1–30", "31–60", "61–90", "90+"];
 export function computeRoll(store: Store, f: Filters, scope: Scope) {
   const m = matchers(f, scope);
   const borrowers = store.borrowers.filter((b) => m.borrower(b) && b.prevBucket);
@@ -313,93 +319,125 @@ export function computeUsage(store: Store, f: Filters, scope: Scope) {
   const { calls, from, to } = scoped(store, f, scope);
   const connected = calls.filter((c) => c.connected);
   const secs = sum(connected.map((c) => c.durationSec));
+  const billable = (cs: Call[]) => sum(cs.map((c) => Math.ceil(c.durationSec / 60))); // telecom bills each call rounded up
   const dayMap = new Map<string, number>(dayList(from, to).map((d) => [d, 0]));
   connected.forEach((c) => dayMap.set(istDay(c.ts), (dayMap.get(istDay(c.ts)) ?? 0) + c.durationSec));
-  const byCampaign = new Map<string, { product: string; calls: number; seconds: number }>();
+  const byCampaign = new Map<string, { product: string; calls: number; seconds: number; billableMinutes: number }>();
   connected.forEach((c) => {
-    const row = byCampaign.get(c.campaign) ?? { product: c.product, calls: 0, seconds: 0 };
-    row.calls++; row.seconds += c.durationSec;
+    const row = byCampaign.get(c.campaign) ?? { product: c.product, calls: 0, seconds: 0, billableMinutes: 0 };
+    row.calls++; row.seconds += c.durationSec; row.billableMinutes += Math.ceil(c.durationSec / 60);
     byCampaign.set(c.campaign, row);
   });
   return {
     kpis: {
-      minutes: Math.ceil(secs / 60),
+      minutes: billable(connected),
       connectedCalls: connected.length,
       avgMinPerCall: connected.length ? secs / 60 / connected.length : 0,
       verticals: new Set(connected.map((c) => c.portfolio)).size,
     },
     dailyMinutes: [...dayMap.entries()].map(([date, s]) => ({ date, minutes: Math.round(s / 60) })),
-    campaigns: [...byCampaign.entries()].map(([campaign, v]) => ({ campaign, ...v, billableMinutes: Math.ceil(v.seconds / 60) })).sort((a, b) => b.seconds - a.seconds),
+    campaigns: [...byCampaign.entries()].map(([campaign, v]) => ({ campaign, ...v })).sort((a, b) => b.seconds - a.seconds),
   };
 }
 
-export type RuleName = "Calling window" | "Daily cap" | "Weekly cap" | "Do-not-call" | "WhatsApp consent";
+export type RuleName = "Calling window" | "Daily cap" | "Weekly cap" | "Do-not-call" | "WhatsApp consent" | "Disclosure";
 export interface Violation { ts: string; rule: RuleName; loanId: string; borrowerId: string; name: string; campaign: string; detail: string }
+export const RULE_NAMES: RuleName[] = ["Calling window", "Daily cap", "Weekly cap", "Do-not-call", "WhatsApp consent", "Disclosure"];
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const hhmm = (h: number) => { const m = Math.round(h * 60); return `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`; };
 
 export function computeCompliance(store: Store, f: Filters, scope: Scope) {
   const rules = store.compliance;
-  const { borrowers, calls, from, to, inRange } = scoped(store, f, scope);
+  const now = Date.now();
+  const { borrowers, calls, from, to, inRange, m } = scoped(store, f, scope, now);
   const byLoan = new Map(borrowers.map((b) => [b.loanId, b]));
-  const voice = calls.filter((c) => byLoan.has(c.loanId));
-  const wa = store.touches.filter((t) => t.channel === "WhatsApp" && byLoan.has(t.loanId) && inRange(t.ts));
+  const dialled = calls.filter((c) => c.channel !== "WhatsApp" && byLoan.has(c.loanId));
+  const msgs = store.touches.filter((t) => byLoan.has(t.loanId) && inRange(t.ts));
   const v: Violation[] = [];
+  const flaggedContacts = new Set<string>();
   const base = (b: Borrower) => ({ loanId: b.loanId, borrowerId: b.id, name: b.name });
-  const hhmm = (h: number) => `${String(Math.floor(h)).padStart(2, "0")}:${String(Math.round((h % 1) * 60)).padStart(2, "0")}`;
+  const win = `${rules.windowStart}:00–${rules.windowEnd}:00`;
 
-  for (const c of voice) {
+  for (const c of dialled) {
     const b = byLoan.get(c.loanId)!;
     const h = istHour(c.ts);
-    if (h < rules.windowStart || h >= rules.windowEnd)
-      v.push({ ts: c.ts, rule: "Calling window", ...base(b), campaign: c.campaign, detail: `Dialled at ${hhmm(h)}, outside ${rules.windowStart}:00–${rules.windowEnd}:00` });
-    if (rules.respectDnd && b.dnd)
-      v.push({ ts: c.ts, rule: "Do-not-call", ...base(b), campaign: c.campaign, detail: "Borrower asked not to be called" });
-  }
-  const perDay = new Map<string, Call[]>();
-  for (const c of voice) { const k = `${c.loanId}|${istDay(c.ts)}`; perDay.set(k, [...(perDay.get(k) ?? []), c]); }
-  let overDaily = 0;
-  for (const [k, cs] of perDay) {
-    if (cs.length <= rules.maxPerDay) continue;
-    overDaily += cs.length - rules.maxPerDay;
-    const b = byLoan.get(k.split("|")[0])!;
-    const sorted = [...cs].sort((a, c) => a.ts.localeCompare(c.ts));
-    v.push({ ts: sorted[rules.maxPerDay].ts, rule: "Daily cap", ...base(b), campaign: sorted[0].campaign, detail: `${cs.length} attempts on ${k.split("|")[1]} (cap ${rules.maxPerDay})` });
-  }
-  const perWeek = new Map<string, Call[]>();
-  for (const c of voice) { const k = `${c.loanId}|${Math.floor((Date.parse(c.ts) - from) / (7 * DAY))}`; perWeek.set(k, [...(perWeek.get(k) ?? []), c]); }
-  let overWeekly = 0;
-  for (const [k, cs] of perWeek) {
-    if (cs.length <= rules.maxPerWeek) continue;
-    overWeekly += cs.length - rules.maxPerWeek;
-    const b = byLoan.get(k.split("|")[0])!;
-    const sorted = [...cs].sort((a, c) => a.ts.localeCompare(c.ts));
-    v.push({ ts: sorted[rules.maxPerWeek].ts, rule: "Weekly cap", ...base(b), campaign: sorted[0].campaign, detail: `${cs.length} attempts in 7 days (cap ${rules.maxPerWeek})` });
-  }
-  if (rules.requireWaConsent)
-    for (const t of wa) {
-      const b = byLoan.get(t.loanId)!;
-      if (!b.waConsent) v.push({ ts: t.ts, rule: "WhatsApp consent", ...base(b), campaign: t.template, detail: "WhatsApp message sent without opt-in on file" });
+    if (h < rules.windowStart || h >= rules.windowEnd) {
+      v.push({ ts: c.ts, rule: "Calling window", ...base(b), campaign: c.campaign, detail: `Called at ${hhmm(h)}, outside ${win}` });
+      flaggedContacts.add(c.id);
     }
+    if (rules.respectDnd && b.dnd) {
+      v.push({ ts: c.ts, rule: "Do-not-call", ...base(b), campaign: c.campaign, detail: "Borrower asked not to be called" });
+      flaggedContacts.add(c.id);
+    }
+    if (c.connected && c.disclosed === false) {
+      v.push({ ts: c.ts, rule: "Disclosure", ...base(b), campaign: c.campaign, detail: "AI-agent and call-recording notice was not played" });
+      flaggedContacts.add(c.id);
+    }
+  }
+  for (const t of msgs) {
+    const b = byLoan.get(t.loanId)!;
+    const h = istHour(t.ts);
+    if (h < rules.windowStart || h >= rules.windowEnd) {
+      v.push({ ts: t.ts, rule: "Calling window", ...base(b), campaign: t.template, detail: `${t.channel} message sent at ${hhmm(h)}, outside ${win}` });
+      flaggedContacts.add(t.id);
+    }
+    if (rules.requireWaConsent && t.channel === "WhatsApp" && !b.waConsent) {
+      v.push({ ts: t.ts, rule: "WhatsApp consent", ...base(b), campaign: t.template, detail: "WhatsApp message sent without opt-in on file" });
+      flaggedContacts.add(t.id);
+    }
+  }
+
+  const perLoan = new Map<string, Call[]>();
+  for (const c of dialled) perLoan.set(c.loanId, [...(perLoan.get(c.loanId) ?? []), c]);
+  for (const [loanId, list] of perLoan) {
+    const b = byLoan.get(loanId)!;
+    const sorted = [...list].sort((a, c) => a.ts.localeCompare(c.ts));
+    const days = new Map<string, Call[]>();
+    for (const c of sorted) days.set(istDay(c.ts), [...(days.get(istDay(c.ts)) ?? []), c]);
+    for (const [day, cs] of days) {
+      if (cs.length <= rules.maxPerDay) continue;
+      cs.slice(rules.maxPerDay).forEach((c) => flaggedContacts.add(c.id));
+      v.push({ ts: cs[rules.maxPerDay].ts, rule: "Daily cap", ...base(b), campaign: cs[0].campaign, detail: `${cs.length} attempts on ${day} (cap ${rules.maxPerDay})` });
+    }
+    // Rolling 7 days, not calendar weeks, so a burst across a week boundary is still caught.
+    let lo = 0, inStreak = false;
+    sorted.forEach((c, i) => {
+      const t = Date.parse(c.ts);
+      while (Date.parse(sorted[lo].ts) <= t - 7 * DAY) lo++;
+      const n = i - lo + 1;
+      if (n > rules.maxPerWeek) {
+        flaggedContacts.add(c.id);
+        if (!inStreak) v.push({ ts: c.ts, rule: "Weekly cap", ...base(b), campaign: c.campaign, detail: `${n} attempts in the last 7 days (cap ${rules.maxPerWeek})` });
+        inStreak = true;
+      } else inStreak = false;
+    });
+  }
   v.sort((a, b) => b.ts.localeCompare(a.ts));
 
   const byRule = (r: RuleName) => v.filter((x) => x.rule === r).length;
-  const checks = voice.length + wa.length;
-  const flagged = byRule("Calling window") + byRule("Do-not-call") + byRule("WhatsApp consent") + overDaily + overWeekly;
+  const checks = dialled.length + msgs.length;
   const daily = dayList(from, to).map((date) => ({ date, flags: v.filter((x) => istDay(x.ts) === date).length }));
+
+  const gaps = new Map<string, number>();
+  for (const b of borrowers) if (languageUnserved(b, store.languages)) gaps.set(b.language, (gaps.get(b.language) ?? 0) + 1);
+  const openGrievances = store.grievances.filter((g) => m.portfolio(g.portfolio) && g.status !== "Resolved");
+
   return {
     rules,
-    score: checks ? 100 - ratio(flagged, checks) : 100,
+    score: checks ? Math.max(0, 100 - ratio(flaggedContacts.size, checks)) : 100,
     checks,
-    counts: {
-      "Calling window": byRule("Calling window"), "Daily cap": byRule("Daily cap"), "Weekly cap": byRule("Weekly cap"),
-      "Do-not-call": byRule("Do-not-call"), "WhatsApp consent": byRule("WhatsApp consent"),
-    } as Record<RuleName, number>,
+    counts: Object.fromEntries(RULE_NAMES.map((r) => [r, byRule(r)])) as Record<RuleName, number>,
     dndBorrowers: borrowers.filter((b) => b.dnd).length,
     noConsent: borrowers.filter((b) => !b.waConsent).length,
+    languageGaps: [...gaps.entries()].map(([language, count]) => ({ language, count })).sort((a, b) => b.count - a.count),
+    grievances: { open: openGrievances.length, overdue: openGrievances.filter((g) => Date.parse(g.dueAt) < now).length },
     daily,
     violations: v.slice(0, 300),
     period: [new Date(from).toISOString(), new Date(to).toISOString()],
   };
 }
+
 
 export interface TimelineItem { ts: string; kind: "call" | "whatsapp" | "sms" | "email" | "payment" | "escalation" | "followup"; title: string; detail: string; status?: string; good?: boolean }
 
@@ -447,7 +485,10 @@ export function computeBorrowerProfile(store: Store, id: string, scope: Scope) {
   if (!b.waConsent) playbook.push("No WhatsApp opt-in on file. Use voice or SMS.");
   else if (waSent >= 2 && waRate - voiceRate >= 15) playbook.push(`Lead with WhatsApp. They read or replied to ${channelStats[1].engaged} of ${waSent} messages; voice reaches them ${voiceRate.toFixed(0)}% of the time.`);
   else if (voice.length >= 2) playbook.push(`Voice works. ${answered.length} of ${voice.length} calls answered; WhatsApp engagement ${waRate.toFixed(0)}%.`);
-  playbook.push(`Use the ${b.language} voice agent.`);
+  if (b.disposition === "Dispute") playbook.unshift("Disputed account. Automated outreach is paused. Route this to the human desk and log a grievance if they complain.");
+  playbook.push(languageUnserved(b, store.languages)
+    ? `Their language is ${b.language}, which isn't switched on yet. Calls fall back to English until it is enabled on the Channels page.`
+    : `Use the ${b.language} voice agent.`);
   if (b.disposition === "PTP" && b.ptpDate && b.ptpOutcome === "pending")
     playbook.push(`Promise of ₹${(b.ptpAmount ?? b.emi).toLocaleString("en-IN")} due ${new Date(b.ptpDate).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" })}. Send a reminder the evening before.`);
   if (b.ptpOutcome === "broken") playbook.push("Their last promise was broken. Agree a smaller part-payment before setting a new date.");
@@ -459,7 +500,7 @@ export function computeBorrowerProfile(store: Store, id: string, scope: Scope) {
     ...calls.map((c): TimelineItem => ({
       ts: c.ts, kind: c.channel === "WhatsApp" ? "whatsapp" : "call",
       title: c.channel === "WhatsApp" ? `WhatsApp bot conversation · ${c.connected ? c.classification : "no reply"}` : `${c.channel} call · ${c.connected ? c.classification : "not answered"}`,
-      detail: c.connected ? `${c.campaign} · ${Math.floor(c.durationSec / 60)}:${String(c.durationSec % 60).padStart(2, "0")} talk time · attempt ${c.attemptNo}` : `${c.campaign} · ${c.dropReason?.replace(/_/g, " ")} · attempt ${c.attemptNo}`,
+      detail: c.connected ? `${c.campaign}${c.language ? ` · ${c.language}` : ""} · ${Math.floor(c.durationSec / 60)}:${String(c.durationSec % 60).padStart(2, "0")} talk time · attempt ${c.attemptNo}` : `${c.campaign} · ${c.dropReason?.replace(/_/g, " ")} · attempt ${c.attemptNo}`,
       status: c.connected ? "Answered" : "Missed", good: c.connected,
     })),
     ...touches.map((t: Touch): TimelineItem => ({

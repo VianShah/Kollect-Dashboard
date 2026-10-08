@@ -8,6 +8,8 @@ import type { ScenarioKey } from "@/lib/types";
 export async function POST(req: Request) {
   const a = await requireUser("demo");
   if ("res" in a) return a.res;
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_DEMO_USERS !== "1") return bad("Demo controls are disabled in production", 404);
+  if (a.store.source !== "mock") return bad("This instance holds real data. Demo controls are only available on demo data.", 409);
   const body = await req.json().catch(() => ({}));
   let store = a.store;
   if (body.scenario || body.reset) {

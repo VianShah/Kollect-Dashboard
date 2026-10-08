@@ -1,7 +1,7 @@
 export type Role = "admin" | "supervisor" | "operator" | "client";
 export type ScenarioKey = "nbfc" | "bank" | "bnpl";
-export type Segment = "Pre Due" | "Post Due (0–30)" | "Post Due (30–90)";
-export type Bucket = "Current" | "1–30" | "31–60" | "61–90";
+export type Segment = "Pre Due" | "Post Due (0–30)" | "Post Due (30–90)" | "Post Due (90+)";
+export type Bucket = "Current" | "1–30" | "31–60" | "61–90" | "90+";
 export type Disposition = "Paid" | "PTP" | "Partial" | "Callback" | "Dispute" | "No Contact" | "Escalated";
 export type LinkStatus = "Not shared" | "Shared" | "Link clicked" | "Paid via link";
 export type Channel = "AI Voice" | "WhatsApp" | "Human Desk";
@@ -58,6 +58,10 @@ export interface Call {
   dropReason?: string;
   attemptNo: number;
   visible: boolean;
+  language?: string;
+  /** The AI-agent and call-recording disclosure was played at the start of the call. */
+  disclosed?: boolean;
+  recordingUrl?: string;
 }
 
 export interface Touch {
@@ -68,7 +72,28 @@ export interface Touch {
   template: string;
   status: TouchStatus;
   text: string;
+  language?: string;
 }
+
+export type GrievanceStatus = "Open" | "In progress" | "Resolved";
+export interface Grievance {
+  id: string;
+  borrowerId: string;
+  loanId: string;
+  name: string;
+  portfolio: string;
+  product: string;
+  category: string;
+  detail: string;
+  raisedAt: string;
+  dueAt: string;
+  status: GrievanceStatus;
+  resolvedAt?: string;
+  resolution?: string;
+  raisedBy: string;
+}
+
+export interface GrievanceOfficer { name: string; email: string; phone: string }
 
 export interface FollowUp {
   id: string;
@@ -118,6 +143,8 @@ export interface AuditEntry {
   action: string;
   target: string;
   detail: string;
+  prev: string;
+  hash: string;
 }
 
 export interface ComplianceRules {
@@ -142,6 +169,11 @@ export interface Store {
   globalMax: number;
   recoveryTargetPct: number;
   compliance: ComplianceRules;
+  /** Languages the lender has switched on for outreach; one voice campaign exists per language and product. */
+  languages: string[];
+  grievances: Grievance[];
+  grievanceSeq: number;
+  gro: GrievanceOfficer;
   events: LiveEvent[];
   eventSeq: number;
   audit: AuditEntry[];

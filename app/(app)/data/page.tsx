@@ -8,7 +8,7 @@ interface Report { sheet: string; rows: number; imported: number; errors: string
 
 const SHEETS: [string, string, string][] = [
   ["Borrowers", "LoanID, Outstanding", "Name, Phone, Product, Segment, Portfolio, Region, Language, EMI, DPD, PrevDPD, Disposition, PaymentLink, ExperianScore, Channel, DoNotCall, WhatsAppConsent, PTPDate, PTPAmount, RecoveredAmount, RecoveredAt"],
-  ["Calls", "Timestamp, Campaign", "LoanID, CallID, Product, Portfolio, Channel, DurationSec, Disposition, DropReason, AttemptNo, Visible"],
+  ["Calls", "Timestamp, Campaign", "LoanID, CallID, Product, Portfolio, Channel, DurationSec, Disposition, DropReason, AttemptNo, Visible, Language, Disclosed (AI and recording notice played), RecordingURL (https)"],
   ["Messages", "Timestamp, LoanID", "Channel (WhatsApp, SMS, Email), Template, Status, Text"],
   ["FollowUps", "LoanID, FollowUpAt", "Timestamp, Channel, Note, Status"],
   ["Agents", "Code", "AgentName, Product, Language, Voice, Channel, Live, Max"],
@@ -37,7 +37,9 @@ export default function DataPage() {
     await refreshMeta(); bump();
   }
   async function reset() {
-    await fetch("/api/reset", { method: "POST" });
+    if (!window.confirm("This replaces all uploaded data with the demo dataset. Complaints, settings and the audit trail are kept. Continue?")) return;
+    const res = await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: "RESET" }) }).catch(() => null);
+    if (!res || !res.ok) return setMsg((await res?.json().catch(() => null))?.error ?? "The reset didn't go through.");
     setReport([]); setMsg("Back on demo data.");
     await refreshMeta(); bump();
   }
@@ -73,9 +75,10 @@ export default function DataPage() {
 x-api-key: <INGEST_KEY>
 
 {
-  "calls":  [{ "callId": "c_9f2k", "ts": "2026-10-03T10:15:00Z", "campaign": "KOLLECT_PL_PD30_VOICE_HI",
-               "loanId": "LN2024000123", "channel": "AI Voice", "durationSec": 120, "classification": "PTP" }],
-  "agents": [{ "code": "KOLLECT_PL_PD30_VOICE_HI", "live": 2, "max": 3 }]
+  "calls":  [{ "callId": "c_9f2k", "ts": "2026-10-03T10:15:00Z", "campaign": "KOLLECT_PL_PD1_30_VOICE_HI",
+               "loanId": "LN2024000123", "channel": "AI Voice", "durationSec": 120, "classification": "PTP",
+               "language": "Hindi", "disclosed": true, "recordingUrl": "https://..." }],
+  "agents": [{ "code": "KOLLECT_PL_PD1_30_VOICE_HI", "live": 2, "max": 3 }]
 }`}</pre>
       </Card>
     </>

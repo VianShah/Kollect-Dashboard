@@ -9,6 +9,7 @@ export async function POST(req: Request) {
   const form = await req.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) return bad("Attach an .xlsx file as 'file'");
+  if (!/\.xlsx?$/i.test(file.name)) return bad("Only Excel files (.xlsx or .xls) are accepted");
   if (file.size > 25 * 1024 * 1024) return bad("File too large (25MB max)", 413);
   let parsed;
   try { parsed = parseWorkbook(Buffer.from(await file.arrayBuffer())); }

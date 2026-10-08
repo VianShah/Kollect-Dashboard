@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { bad, filtersFrom, requireUser } from "@/lib/api";
 import { computeFollowUps } from "@/lib/metrics";
+import { windowOpen } from "@/lib/contact";
 import { audit, saveStore } from "@/lib/store";
 import { istDay } from "@/lib/time";
 
 export async function GET(req: Request) {
-  const a = await requireUser();
+  const a = await requireUser(undefined, "followups");
   if ("res" in a) return a.res;
   const url = new URL(req.url);
   const month = url.searchParams.get("month") ?? istDay(Date.now()).slice(0, 7);
@@ -31,6 +32,8 @@ export async function POST(req: Request) {
   const b = store.borrowers.find((x) => x.id === body.borrowerId);
   const at = Date.parse(body.at);
   if (!b || Number.isNaN(at)) return bad("borrowerId and a valid time are required");
+  if (!windowOpen(store.compliance, at)) return bad(`Follow-ups must be booked inside calling hours (${store.compliance.windowStart}:00–${store.compliance.windowEnd}:00 IST).`);
+  if (b.dnd) return bad("This borrower asked not to be called. Book a WhatsApp or SMS follow-up instead.", 409);
   const f = {
     id: `F${Date.now()}`, borrowerId: b.id, loanId: b.loanId, name: b.name, portfolio: b.portfolio, product: b.product,
     at: new Date(at).toISOString(), requestedAt: new Date().toISOString(), requestedVia: "Human Desk" as const,

@@ -251,7 +251,7 @@ function GroupTable({ rows, label, param }: { rows: Data["stages"]; label: strin
     <Card title={`By ${label.toLowerCase()}`} pad={false}>
       <div className="overflow-x-auto">
         <table className="table w-full">
-          <thead><tr><th>{label}</th><th className="text-right">Assigned</th><th className="text-right">Contacted</th><th className="text-right">PTP</th><th className="text-right">Recovered</th><th className="text-right">Outstanding</th><th className="text-right">Recovered ₹</th><th className="text-right">Contact rate</th></tr></thead>
+          <thead><tr><th>{label}</th><th className="text-right">Assigned</th><th className="text-right">Contacted</th><th className="text-right">PTP</th><th className="text-right">Recovered</th><th className="text-right">Outstanding</th><th className="text-right">Recovered ₹</th><th className="text-right" title="Share of assigned borrowers reached at least once. Differs from the call connect rate shown on Home.">Borrowers reached</th></tr></thead>
           <tbody>{rows.map((r) => (
             <tr key={r.name}>
               <td className="font-medium">{param ? <Link className="hover:text-brand hover:underline" href={`/borrowers?${param}=${encodeURIComponent(r.name)}`}>{r.name}</Link> : r.name}</td>

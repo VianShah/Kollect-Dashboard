@@ -11,10 +11,10 @@ import { bucketOf } from "@/lib/mock";
 import { d, inrFull } from "@/lib/format";
 import type { Borrower, Bucket } from "@/lib/types";
 
-const SEGMENTS = ["All", "Pre Due", "Post Due (0–30)", "Post Due (30–90)"];
+const SEGMENTS = ["All", "Pre Due", "Post Due (0–30)", "Post Due (30–90)", "Post Due (90+)"];
 const DISPOSITIONS = ["Paid", "PTP", "Partial", "Callback", "Dispute", "No Contact", "Escalated"];
 const STAGES = ["Assigned", "Contacted", "Engaged", "PTP", "Recovered"];
-const BUCKETS: Bucket[] = ["Current", "1–30", "31–60", "61–90"];
+const BUCKETS: Bucket[] = ["Current", "1–30", "31–60", "61–90", "90+"];
 const tier = (s: number) => (s >= 750 ? "Prime" : s >= 650 ? "Near-prime" : "Subprime");
 
 /** Drill-down filters arrive as URL params from KPI cards, funnels, charts and the roll-rate matrix. */
@@ -54,19 +54,21 @@ function Borrowers() {
   const [seg, setSeg] = useState(dr.segment ?? "All");
   const [q, setQ] = useState("");
   const [disp, setDisp] = useState("all");
+  const [lang, setLang] = useState("all");
   const [page, setPage] = useState(0);
 
   useEffect(() => { const open = params.get("open"); if (open) openBorrower(open); }, [params, openBorrower]);
-  useEffect(() => setPage(0), [params, seg, q, disp]);
+  useEffect(() => setPage(0), [params, seg, q, disp, lang]);
 
+  const languages = useMemo(() => [...new Set((data?.borrowers ?? []).map((b) => b.language))].sort(), [data]);
   const rows = useMemo(() => {
     const list = (data?.borrowers ?? []).filter((b) =>
-      dr.test(b) && (seg === "All" || b.segment === seg) && (disp === "all" || b.disposition === disp) &&
+      dr.test(b) && (seg === "All" || b.segment === seg) && (disp === "all" || b.disposition === disp) && (lang === "all" || b.language === lang) &&
       (!q || `${b.name} ${b.loanId} ${b.id}`.toLowerCase().includes(q.toLowerCase())));
     if (dr.sort === "dpd") list.sort((a, b) => b.dpd - a.dpd);
     else if (dr.sort === "outstanding") list.sort((a, b) => b.outstanding - a.outstanding);
     return list;
-  }, [data, dr, seg, disp, q]);
+  }, [data, dr, seg, disp, q, lang]);
 
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
@@ -74,9 +76,10 @@ function Borrowers() {
   const view = rows.slice(page * PAGE, page * PAGE + PAGE);
 
   function exportCsv() {
-    const head = ["Name", "Phone", "LoanID", "Product", "Portfolio", "Segment", "EMI", "Outstanding", "DPD", "Disposition", "PaymentLink", "Experian", "Channel", "PTPDate", "PTPAmount"];
-    const lines = rows.map((b) => [b.name, b.phone, b.loanId, b.product, b.portfolio, b.segment, b.emi, b.outstanding, b.dpd, b.disposition, b.paymentLink, b.experian, b.channel, b.ptpDate?.slice(0, 10) ?? "", b.ptpAmount ?? ""]
-      .map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+    const head = ["Name", "Phone", "LoanID", "Product", "Portfolio", "Segment", "Language", "EMI", "Outstanding", "DPD", "Disposition", "PaymentLink", "Experian", "Channel", "PTPDate", "PTPAmount"];
+    const safe = (v: unknown) => { const s = String(v); return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s; }; // stops spreadsheets running text as a formula
+    const lines = rows.map((b) => [b.name, b.phone, b.loanId, b.product, b.portfolio, b.segment, b.language, b.emi, b.outstanding, b.dpd, b.disposition, b.paymentLink, b.experian, b.channel, b.ptpDate?.slice(0, 10) ?? "", b.ptpAmount ?? ""]
+      .map((v) => `"${safe(v).replace(/"/g, '""')}"`).join(","));
     const url = URL.createObjectURL(new Blob(["﻿" + [head.join(","), ...lines].join("\n")], { type: "text/csv" }));
     Object.assign(document.createElement("a"), { href: url, download: "borrowers.csv" }).click();
     URL.revokeObjectURL(url);
@@ -101,12 +104,16 @@ function Borrowers() {
           <option value="all">All dispositions</option>
           {DISPOSITIONS.map((x) => <option key={x}>{x}</option>)}
         </select>
+        <select aria-label="Language" className="input" value={lang} onChange={(e) => setLang(e.target.value)}>
+          <option value="all">All languages</option>
+          {languages.map((x) => <option key={x}>{x}</option>)}
+        </select>
         <button className="btn ml-auto" onClick={exportCsv}><Download size={14} aria-hidden="true" />Export CSV</button>
       </div>
       <Card pad={false}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
-            <thead><tr><th>Borrower</th><th>Loan ID</th><th>Product</th><th>Segment</th><th className="text-right">EMI</th><th className="text-right">Outstanding</th><th className="text-right">DPD</th><th>Disposition</th><th>Payment link</th><th>Experian</th><th>Channel</th><th>PTP</th></tr></thead>
+            <thead><tr><th>Borrower</th><th>Loan ID</th><th>Product</th><th>Segment</th><th>Language</th><th className="text-right">EMI</th><th className="text-right">Outstanding</th><th className="text-right">DPD</th><th>Disposition</th><th>Payment link</th><th>Experian</th><th>Channel</th><th>PTP</th></tr></thead>
             <tbody>
               {view.map((b) => (
                 <tr key={b.id} className="cursor-pointer hover:bg-sunk/40" onClick={() => openBorrower(b.id)}>
@@ -117,6 +124,7 @@ function Borrowers() {
                   <td className="font-mono text-[12.5px]">{b.loanId}</td>
                   <td>{b.product}</td>
                   <td className="text-[12.5px] text-ink-2">{b.segment}</td>
+                  <td className="text-[12.5px]">{b.language}</td>
                   <td className="text-right num">{inrFull(b.emi)}</td><td className="text-right num">{inrFull(b.outstanding)}</td><td className="text-right num">{b.dpd}</td>
                   <td><Badge>{b.disposition}</Badge></td><td><Badge>{b.paymentLink}</Badge></td>
                   <td className="num">{b.experian} <Badge>{tier(b.experian)}</Badge></td>

@@ -1,5 +1,6 @@
 "use client";
 import { createContext, useContext } from "react";
+import type { Lang } from "@/lib/languages";
 import type { CampaignDef } from "@/lib/mock";
 import type { Filters, Role, ScenarioKey, Scope } from "@/lib/types";
 
@@ -9,6 +10,10 @@ export interface Meta {
   portfolios: string[];
   products: string[];
   campaigns: CampaignDef[];
+  languages: Lang[];
+  enabledLanguages: string[];
+  unservedBorrowers: number;
+  windowOpen: boolean;
   source: "mock" | "excel" | "api";
   live: boolean;
   clientPortfolio: string | null;
