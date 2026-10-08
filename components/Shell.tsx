@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -54,7 +54,7 @@ export default function Shell({ user, children }: { user: SessionUser; children:
     user.role === "client" ? meta.clientPortfolio : filters.portfolio !== "all" ? filters.portfolio : "All portfolios",
     filters.product !== "all" ? filters.product : "All products",
     current?.filters ? RANGE_LABEL[filters.range] : null,
-  ].filter(Boolean).join(" Â· ");
+  ].filter(Boolean).join(" · ");
 
   const initials = user.name.split(" ").map((w) => w[0]).slice(0, 2).join("");
 
