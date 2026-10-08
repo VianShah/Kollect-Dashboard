@@ -1,18 +1,17 @@
-"use client";
+﻿"use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, RotateCcw, Menu, X,
+  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X,
 } from "lucide-react";
 import { ACCESS, MODULES, ROLE_LABEL, can, type ModuleGroup } from "@/lib/roles";
-import type { Filters, ScenarioKey } from "@/lib/types";
+import type { Filters } from "@/lib/types";
 import type { SessionUser } from "@/lib/auth";
 import { AppCtx, type Meta } from "./ctx";
 import { localMeta } from "./local";
 import Notifications from "./Notifications";
 import BorrowerDrawer from "./BorrowerDrawer";
-import { post } from "./useApi";
 
 const ICONS = { home: LayoutDashboard, performance: BarChart3, borrowers: Users, followups: CalendarDays, channels: Radio, audit: ShieldCheck, compliance: Scale, usage: Gauge, data: Database };
 const GROUPS: ModuleGroup[] = ["Monitor", "Act", "Assure", "Setup"];
@@ -55,7 +54,7 @@ export default function Shell({ user, children }: { user: SessionUser; children:
     user.role === "client" ? meta.clientPortfolio : filters.portfolio !== "all" ? filters.portfolio : "All portfolios",
     filters.product !== "all" ? filters.product : "All products",
     current?.filters ? RANGE_LABEL[filters.range] : null,
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" Â· ");
 
   const initials = user.name.split(" ").map((w) => w[0]).slice(0, 2).join("");
 
@@ -121,7 +120,11 @@ export default function Shell({ user, children }: { user: SessionUser; children:
                   <span className="pulse-dot h-2 w-2 rounded-full bg-[#1f9d6e]" aria-hidden="true" />Live traffic
                 </span>
               )}
-              {can(user.role, "demo") && <DemoMenu meta={meta} onChanged={async () => { await refreshMeta(); setFilters(DEFAULT_FILTERS); bump(); }} />}
+              {can(user.role, "demo") && (
+                <a className="btn" href="https://kollect-statemachine.onrender.com/" target="_blank" rel="noopener noreferrer">
+                  <FlaskConical size={15} aria-hidden="true" /><span className="hidden sm:inline">Statemachine</span>
+                </a>
+              )}
               <Notifications />
             </div>
             {current?.filters && allowed.includes(current.key) && (
@@ -173,55 +176,3 @@ export default function Shell({ user, children }: { user: SessionUser; children:
   );
 }
 
-function DemoMenu({ meta, onChanged }: { meta: Meta; onChanged: () => Promise<void> }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
-  }, [open]);
-
-  async function send(body: object) {
-    setBusy(true);
-    await post("/api/demo", body);
-    await onChanged();
-    setBusy(false);
-  }
-  const current = meta.scenarios.find((s) => s.key === meta.scenario);
-
-  return (
-    <div className="relative" ref={ref}>
-      <button className="btn" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <FlaskConical size={15} aria-hidden="true" /><span className="hidden sm:inline">Demo</span>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-11 z-40 w-[340px] max-w-[calc(100vw-24px)] rounded-lg border border-line bg-surface p-4 shadow-[0_12px_40px_rgba(16,23,20,.14)]">
-          <div className="text-[14px] font-semibold">Demo controls</div>
-          <p className="mt-0.5 text-[12px] text-muted">Switch the lender type to match who you&apos;re presenting to. Each one has its own products, campaigns and borrower book.</p>
-          <div className="label mt-4">Lender type</div>
-          <div className="seg mt-1.5 w-full" role="group" aria-label="Lender type">
-            {meta.scenarios.map((s) => (
-              <button key={s.key} className="flex-1" aria-pressed={meta.scenario === s.key && meta.source === "mock"} disabled={busy}
-                onClick={() => send({ scenario: s.key as ScenarioKey })}>{s.label}</button>
-            ))}
-          </div>
-          {current && <p className="mt-1.5 text-[12px] text-muted">Products: {current.products.join(", ")}</p>}
-          <label className="mt-4 flex cursor-pointer items-start justify-between gap-3">
-            <span>
-              <span className="block text-[13px] font-medium">Simulate live traffic</span>
-              <span className="block text-[12px] text-muted">New calls, promises, payments and escalations every few seconds.</span>
-            </span>
-            <input type="checkbox" role="switch" className="mt-1 h-4 w-4 accent-[var(--color-brand)]" checked={meta.live} disabled={busy || meta.source !== "mock"} onChange={(e) => send({ live: e.target.checked })} />
-          </label>
-          <button className="btn mt-4 w-full" disabled={busy} onClick={() => send({ reset: true })}><RotateCcw size={14} aria-hidden="true" />Reset to a clean {current?.label ?? ""} dataset</button>
-          {meta.source !== "mock" && <p className="mt-2 text-[12px] text-warn">Showing uploaded data. Picking a lender type switches back to demo data.</p>}
-        </div>
-      )}
-    </div>
-  );
-}
