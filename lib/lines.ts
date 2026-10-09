@@ -7,7 +7,7 @@ export interface CommChannelDef { key: CommChannel; use: string; unit: "line" | 
 /** Automated channels run on lines of 100 concurrent sessions. Telecallers are people, so each seat holds one call. */
 export const COMM_CHANNELS: CommChannelDef[] = [
   { key: "Voice agents", use: "AI voice calls in the borrower's language: reminders, promises to pay, call-backs", unit: "line", perLine: SESSIONS_PER_LINE, agentChannel: "AI Voice", maxLines: 50 },
-  { key: "IVR", use: "Recorded reminder calls with keypad options, such as press 1 to get a payment link", unit: "line", perLine: SESSIONS_PER_LINE, maxLines: 50 },
+  { key: "IVR", use: "Recorded reminder calls with keypad options, such as press 1 to get a payment link", unit: "line", perLine: SESSIONS_PER_LINE, agentChannel: "IVR", maxLines: 50 },
   { key: "WhatsApp", use: "Bot conversations, payment links and reminders, only to borrowers who opted in", unit: "line", perLine: SESSIONS_PER_LINE, agentChannel: "WhatsApp", maxLines: 50 },
   { key: "SMS", use: "Reminders and payment links by text", unit: "line", perLine: SESSIONS_PER_LINE, maxLines: 50 },
   { key: "Telecallers", use: "People on the human desk for escalations, disputes and hardship cases", unit: "seat", perLine: 1, agentChannel: "Human Desk", maxLines: 25 },

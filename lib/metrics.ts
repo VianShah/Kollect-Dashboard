@@ -193,6 +193,7 @@ export function computePerformance(store: Store, f: Filters, scope: Scope) {
     channels: group(borrowers, (b) => b.channel),
     regions: group(borrowers, (b) => b.region),
     escalations: borrowers.filter((b) => b.disposition === "Escalated").sort((a, b) => b.outstanding - a.outstanding).slice(0, 50).map(publicBorrower),
+    patterns: computePatterns(store, f, scope),
     forecast: computeForecast(store, f, scope),
     roll: computeRoll(store, f, scope),
   };
@@ -338,6 +339,58 @@ export function computeUsage(store: Store, f: Filters, scope: Scope) {
     dailyMinutes: [...dayMap.entries()].map(([date, s]) => ({ date, minutes: Math.round(s / 60) })),
     campaigns: [...byCampaign.entries()].map(([campaign, v]) => ({ campaign, ...v })).sort((a, b) => b.seconds - a.seconds),
   };
+}
+
+const DOM_BUCKETS = [
+  { label: "1–7 (salary week)", from: 1, to: 7 }, { label: "8–14", from: 8, to: 14 },
+  { label: "15–21", from: 15, to: 21 }, { label: "22–31", from: 22, to: 31 },
+];
+const PAY_HOURS = [
+  { label: "8–12", from: 8, to: 12 }, { label: "12–17", from: 12, to: 17 },
+  { label: "17–21", from: 17, to: 21 }, { label: "21–24", from: 21, to: 24 }, { label: "0–8", from: 0, to: 8 },
+];
+
+/**
+ * When and how money comes in: day of month, hour of payment, payment-link share, and whether voice or WhatsApp
+ * gets a response by time of day. Uses the last 90 days of payments so the pattern is stable whatever range is picked.
+ */
+export function computePatterns(store: Store, f: Filters, scope: Scope) {
+  const now = Date.now();
+  const m = matchers({ ...f, product: "all" }, scope);
+  const borrowers = store.borrowers.filter(m.borrower);
+  const byLoan = new Map(borrowers.map((b) => [b.loanId, b]));
+  const calls = store.calls.filter((c) => m.call(c) && byLoan.has(c.loanId) && Date.parse(c.ts) > now - 30 * DAY);
+  const touches = store.touches.filter((t) => byLoan.has(t.loanId) && Date.parse(t.ts) > now - 30 * DAY);
+
+  const build = (product: string | null) => {
+    const bs = borrowers.filter((b) => !product || b.product === product);
+    const paid = bs.filter((b) => b.recoveredAt && b.recoveredAmount && Date.parse(b.recoveredAt) > now - 90 * DAY);
+    const total = sum(paid.map((b) => b.recoveredAmount));
+    const share = (test: (b: Borrower) => boolean) => ratio(sum(paid.filter(test).map((b) => b.recoveredAmount)), total);
+    const dom = (b: Borrower) => Number(istDay(b.recoveredAt!).slice(8));
+    const hr = (b: Borrower) => istHour(b.recoveredAt!);
+    const loans = new Set(bs.map((b) => b.loanId));
+    const voice = calls.filter((c) => c.channel !== "WhatsApp" && loans.has(c.loanId));
+    const answer = (from: number, to: number) => { const v = voice.filter((c) => { const h = istHour(c.ts); return h >= from && h < to; }); return { rate: ratio(v.filter((c) => c.connected).length, v.length), n: v.length }; };
+    const wa = touches.filter((t) => t.channel === "WhatsApp" && loans.has(t.loanId));
+    const waBot = calls.filter((c) => c.channel === "WhatsApp" && loans.has(c.loanId));
+    const waEngaged = wa.filter((t) => ["Read", "Replied", "Clicked"].includes(t.status)).length + waBot.filter((c) => c.connected).length;
+    return {
+      product: product ?? "All products",
+      payments: paid.length,
+      recovered: total,
+      dayOfMonth: DOM_BUCKETS.map((d) => ({ label: d.label, share: share((b) => dom(b) >= d.from && dom(b) <= d.to) })),
+      payHour: PAY_HOURS.map((h) => ({ label: h.label, share: share((b) => hr(b) >= h.from && hr(b) < h.to) })),
+      salaryWeek: share((b) => dom(b) <= 7),
+      afterFive: share((b) => hr(b) >= 17),
+      viaLink: ratio(paid.filter((b) => b.paymentLink === "Paid via link").length, paid.length),
+      voiceDay: answer(9, 17),
+      voiceEvening: answer(17, 19),
+      waResponse: { rate: ratio(waEngaged, wa.length + waBot.length), n: wa.length + waBot.length },
+    };
+  };
+  const products = [...new Set(borrowers.map((b) => b.product))];
+  return { overall: build(null), products: products.map(build).sort((a, b) => b.recovered - a.recovered) };
 }
 
 export type RuleName = "Calling window" | "Daily cap" | "Weekly cap" | "Do-not-call" | "WhatsApp consent" | "Disclosure";

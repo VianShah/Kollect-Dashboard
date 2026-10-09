@@ -12,7 +12,7 @@ import { Badge, C, Card, DISP_COLOR, ErrorNote, Kpi, Loading, Offline, Tabs, axi
 import { computePerformance } from "@/lib/metrics";
 import { inr, inrFull, num, pct, shortDay } from "@/lib/format";
 
-const TABS = ["Overview", "Forecast", "Roll rates", "Segments", "Products", "Channels", "Regions", "Escalations"] as const;
+const TABS = ["Overview", "Patterns", "Forecast", "Roll rates", "Segments", "Products", "Channels", "Regions", "Escalations"] as const;
 type Tab = (typeof TABS)[number];
 type Data = ReturnType<typeof computePerformance>;
 
@@ -36,6 +36,7 @@ function Performance() {
       <Offline show={offline} />
       <Tabs tabs={TABS} value={tab} onChange={setTab} />
       {tab === "Overview" && <Overview data={data} />}
+      {tab === "Patterns" && <Patterns p={data.patterns} />}
       {tab === "Forecast" && <Forecast f={data.forecast} />}
       {tab === "Roll rates" && <Roll r={data.roll} />}
       {tab === "Segments" && <GroupTable rows={data.stages} label="Segment" param="segment" />}
@@ -136,6 +137,85 @@ function Overview({ data }: { data: Data }) {
         </ResponsiveContainer>
       </Card>
     </div>
+  );
+}
+
+type PatternRow = Data["patterns"]["overall"];
+const p0 = (n: number) => `${n.toFixed(0)}%`;
+
+function Patterns({ p }: { p: Data["patterns"] }) {
+  const [sel, setSel] = useState("All products");
+  const row: PatternRow = sel === "All products" ? p.overall : p.products.find((x) => x.product === sel) ?? p.overall;
+  const top = [...row.dayOfMonth].sort((a, b) => b.share - a.share)[0];
+  const insights = [
+    `${p0(row.salaryWeek)} of collections land in the salary week (days 1–7)${top && !top.label.startsWith("1–7") ? `, but the biggest window here is days ${top.label}` : ""}. Put reminders and payment links out on the last days of the month.`,
+    `Voice calls are answered ${p0(row.voiceDay.rate)} of the time during the day against ${p0(row.voiceEvening.rate)} between 17:00 and 19:00. Save calls for the evening.`,
+    `WhatsApp gets a response ${p0(row.waResponse.rate)} of the time, and ${p0(row.viaLink)} of payments come through the payment link. Lead with WhatsApp and a link.`,
+    `${p0(row.afterFive)} of the money arrives after 17:00, so send links in the afternoon and let borrowers pay when they're home.`,
+  ];
+  const chart = (rows: { label: string; share: number }[], hot: (l: string) => boolean) => (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={rows} margin={{ left: -16 }}>
+        <CartesianGrid stroke={C.grid} vertical={false} />
+        <XAxis dataKey="label" {...axisProps} />
+        <YAxis unit="%" {...axisProps} />
+        <Tooltip {...tooltipStyle} formatter={(v) => [`${Number(v).toFixed(1)}%`, "Share of collections"]} cursor={{ fill: "#f1eee8" }} />
+        <Bar dataKey="share" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+          {rows.map((r) => <Cell key={r.label} fill={hot(r.label) ? C.brand : C.brandLight} />)}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="seg" role="group" aria-label="Product">
+          {["All products", ...p.products.map((x) => x.product)].map((name) => <button key={name} aria-pressed={sel === name} onClick={() => setSel(name)}>{name}</button>)}
+        </div>
+        <span className="text-[12px] text-muted num">{num(row.payments)} payments, {inr(row.recovered)} in the last 90 days</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <Kpi label="Collected in salary week" value={p0(row.salaryWeek)} sub="Days 1–7 of the month" />
+        <Kpi label="Paid after 5 pm" value={p0(row.afterFive)} sub="Share of money collected" />
+        <Kpi label="Paid through the link" value={p0(row.viaLink)} sub="Share of payments" />
+        <Kpi label="Voice answered, day vs evening" value={`${p0(row.voiceDay.rate)} → ${p0(row.voiceEvening.rate)}`} sub={`WhatsApp response ${p0(row.waResponse.rate)}`} />
+      </div>
+      <Card title={`What the data says${sel === "All products" ? " across the book" : ` for ${sel}`}`}>
+        <ol className="space-y-2">
+          {insights.map((t, i) => (
+            <li key={i} className="flex gap-2.5 text-[13.5px] leading-snug">
+              <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded bg-sunk text-[11px] font-semibold text-ink-2 num">{i + 1}</span>{t}
+            </li>
+          ))}
+        </ol>
+      </Card>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card title="When in the month money comes in" sub="Share of collections by day of month">{chart(row.dayOfMonth, (l) => l === top?.label)}</Card>
+        <Card title="When in the day borrowers pay" sub="Share of collections by hour (IST)">{chart(row.payHour, (l) => l === "17–21")}</Card>
+      </div>
+      <Card pad={false} title="Average against each product" sub="Each product pays on its own rhythm. Credit cards follow the mid-month statement due date; BNPL pays most in the evening and through links; two-wheeler borrowers pay more in cash during the day.">
+        <div className="overflow-x-auto">
+          <table className="table w-full whitespace-nowrap">
+            <thead><tr><th>Product</th><th className="text-right">Collected (90 days)</th><th className="text-right">Salary week</th><th className="text-right">Days 15–21</th><th className="text-right">After 5 pm</th><th className="text-right">Via link</th><th className="text-right">Voice day</th><th className="text-right">Voice evening</th><th className="text-right">WhatsApp response</th></tr></thead>
+            <tbody>
+              {[p.overall, ...p.products].map((x) => (
+                <tr key={x.product} className={x.product === "All products" ? "bg-sunk/50 font-medium" : ""}>
+                  <td>{x.product === "All products" ? "Average, all products" : x.product}</td>
+                  <td className="text-right num">{inr(x.recovered)}</td>
+                  <td className="text-right num">{p0(x.salaryWeek)}</td>
+                  <td className="text-right num">{p0(x.dayOfMonth[2].share)}</td>
+                  <td className="text-right num">{p0(x.afterFive)}</td>
+                  <td className="text-right num">{p0(x.viaLink)}</td>
+                  <td className="text-right num">{p0(x.voiceDay.rate)}</td>
+                  <td className="text-right num">{p0(x.voiceEvening.rate)}</td>
+                  <td className="text-right num">{p0(x.waResponse.rate)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </>
   );
 }
 

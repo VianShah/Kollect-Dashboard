@@ -170,7 +170,7 @@ export default function Shell({ user, children }: { user: SessionUser; children:
                 </select>
                 <select aria-label="Channel" className="input" value={filters.channel} onChange={(e) => setFilters({ ...filters, channel: e.target.value })}>
                   <option value="all">All channels</option>
-                  <option>AI Voice</option><option>WhatsApp</option><option>Human Desk</option>
+                  <option>AI Voice</option><option>IVR</option><option>WhatsApp</option><option>Human Desk</option>
                 </select>
                 {(filters.portfolio !== "all" || filters.product !== "all" || filters.channel !== "all" || filters.range !== "30d") && (
                   <button className="btn btn-ghost" onClick={() => setFilters(DEFAULT_FILTERS)}>Clear filters</button>

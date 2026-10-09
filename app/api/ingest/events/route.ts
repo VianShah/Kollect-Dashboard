@@ -5,7 +5,7 @@ import { addEvent, audit, getStore, saveStore } from "@/lib/store";
 import type { Call, Channel, Disposition } from "@/lib/types";
 
 const CLASSES: Disposition[] = ["Paid", "PTP", "Partial", "Callback", "Dispute", "No Contact", "Escalated"];
-const CHANNELS: Channel[] = ["AI Voice", "WhatsApp", "Human Desk"];
+const CHANNELS: Channel[] = ["AI Voice", "IVR", "WhatsApp", "Human Desk"];
 const MAX_CALLS = 500;
 
 const sameKey = (given: string | null, expected: string) => {

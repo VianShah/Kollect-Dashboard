@@ -6,7 +6,7 @@ import { DEFAULT_LANGUAGES, FALLBACK_LANGUAGE, REGION_LANGUAGES, langCode, voice
 import { renderMessage, type TemplateName } from "./messages";
 import { COMM_CHANNELS, DEFAULT_LINES, rebalance } from "./lines";
 
-export const STORE_VERSION = 4;
+export const STORE_VERSION = 5;
 
 // Seeded RNG so the server and the offline fallback produce the same dataset.
 export function rng(seed: number) {
@@ -59,15 +59,16 @@ export const SCENARIOS: Record<ScenarioKey, { label: string; seed: number; portf
 };
 
 /** early = 1–30 days past due, late = 31+ days past due (including 90+). */
-export type CampaignStage = "predue" | "early" | "late" | "esc";
+export type CampaignStage = "predue" | "ivr" | "early" | "late" | "esc";
 export interface CampaignDef { code: string; product: string; channel: Channel; language: string; stage: CampaignStage }
-export const STAGE_LABEL: Record<CampaignStage, string> = { predue: "Pre-due", early: "1–30 DPD", late: "31+ DPD", esc: "Escalation" };
+export const STAGE_LABEL: Record<CampaignStage, string> = { predue: "Pre-due", ivr: "IVR reminders", early: "1–30 DPD", late: "31+ DPD", esc: "Escalation" };
 
 /** One WhatsApp bot per product (it speaks each borrower's language) and one voice campaign per product, stage and enabled language. */
 export function campaignsFor(s: ScenarioKey, languages: string[] = DEFAULT_LANGUAGES): CampaignDef[] {
   const out: CampaignDef[] = [];
   for (const p of SCENARIOS[s].products) {
     out.push({ code: `KOLLECT_${p.code}_PREDUE_WA`, product: p.name, channel: "WhatsApp", language: "Multilingual", stage: "predue" });
+    out.push({ code: `KOLLECT_${p.code}_IVR`, product: p.name, channel: "IVR", language: "Multilingual", stage: "ivr" });
     for (const stage of ["early", "late"] as const)
       for (const lang of languages)
         out.push({ code: `KOLLECT_${p.code}_${stage === "early" ? "PD1_30" : "PD31P"}_VOICE_${langCode(lang)}`, product: p.name, channel: "AI Voice", language: lang, stage });
@@ -84,8 +85,10 @@ export function pickCampaign(b: Borrower, camps: CampaignDef[], r: R): CampaignD
     return here.find((c) => c.language === b.language) ?? here.find((c) => c.language === FALLBACK_LANGUAGE) ?? here[0];
   };
   if (b.disposition === "Escalated" && r() < 0.5) return camps[camps.length - 1];
-  if (b.segment === "Pre Due") return r() < 0.6 ? mine.find((c) => c.stage === "predue")! : voice("early");
-  if (b.segment === "Post Due (0–30)") return r() < 0.2 ? mine.find((c) => c.stage === "predue")! : voice("early");
+  const wa = mine.find((c) => c.stage === "predue")!, ivr = mine.find((c) => c.stage === "ivr") ?? wa;
+  const x = r();
+  if (b.segment === "Pre Due") return x < 0.45 ? wa : x < 0.65 ? ivr : voice("early");
+  if (b.segment === "Post Due (0–30)") return x < 0.15 ? wa : x < 0.3 ? ivr : voice("early");
   return voice("late");
 }
 
@@ -148,9 +151,38 @@ export function inPrefBand(b: Borrower, hour: number) {
   return hour >= band.from - 0.5 && hour < band.to + 0.5;
 }
 
+/**
+ * How each product's borrowers pay: share in the salary week (days 1–7), share around a mid-month due date (15–21),
+ * share after 5 pm, and share through the payment link. Credit cards follow their statement due date
+ * mid-month; BNPL is the most evening- and link-driven; two-wheeler borrowers pay more in cash during the day.
+ */
+export const PAY_PROFILE: Record<string, { salary: number; mid: number; evening: number; link: number }> = {
+  BNPL: { salary: 0.64, mid: 0.12, evening: 0.8, link: 0.88 },
+  "Personal Loan": { salary: 0.56, mid: 0.16, evening: 0.72, link: 0.74 },
+  "Credit Card": { salary: 0.3, mid: 0.44, evening: 0.68, link: 0.82 },
+  "Two-Wheeler Loan": { salary: 0.44, mid: 0.18, evening: 0.5, link: 0.48 },
+};
+const DEFAULT_PROFILE = { salary: 0.48, mid: 0.18, evening: 0.65, link: 0.66 };
+export const payProfile = (product: string) => PAY_PROFILE[product] ?? DEFAULT_PROFILE;
+
+/** A payment time in the last two months that follows the product's salary-week and evening pattern. */
+function paymentTime(product: string, now: number, r: R): number {
+  const p = payProfile(product);
+  const x = r();
+  const day = x < p.salary ? 1 + Math.floor(r() * 7) : x < p.salary + p.mid ? 15 + Math.floor(r() * 7) : 8 + Math.floor(r() * 21);
+  const hour = r() < p.evening ? 17 + r() * 4.5 : 9 + r() * 8;
+  const [y, m] = istDay(now).split("-").map(Number);
+  for (const back of r() < 0.5 ? [0, 1, 2] : [1, 2]) {
+    const t = Date.UTC(y, m - 1 - back, Math.min(day, 28)) - IST + hour * 3_600_000;
+    if (t <= now) return t;
+  }
+  return now - DAY;
+}
+
 export function connectChance(b: Borrower, channel: Channel, hour: number) {
   const inBand = inPrefBand(b, hour);
-  let p = channel === "WhatsApp" ? (inBand ? 0.88 : 0.66) : inBand ? 0.86 : 0.52;
+  // Most borrowers are at work in the day: voice goes unanswered until the evening, WhatsApp gets read either way.
+  let p = channel === "WhatsApp" ? (inBand ? 0.9 : 0.78) : inBand ? 0.8 : hour >= 17 ? 0.62 : 0.34;
   if (channel !== "WhatsApp" && b.prefChannel === "WhatsApp") p *= 0.75;
   return p;
 }
@@ -159,6 +191,7 @@ export function makeAgent(c: CampaignDef, id: string, business: string): Agent {
   const max = c.stage === "esc" ? 5 : c.stage === "late" ? 2 : 3;
   const name = c.stage === "esc" ? "Human desk"
     : c.channel === "WhatsApp" ? `${c.product} · WhatsApp bot`
+    : c.channel === "IVR" ? `${c.product} · IVR reminders`
     : `${c.product} · Voice ${c.language}${c.stage === "late" ? " (31+ DPD)" : ""}`;
   return {
     id, name, code: c.code, business, product: c.product, language: c.language,
@@ -208,10 +241,11 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
     else if (stage === 3) disposition = r() < 0.8 ? "PTP" : "Partial";
     else disposition = "Paid";
 
-    const prefChannel: Channel = r() < 0.35 ? "WhatsApp" : "AI Voice";
+    const pc = r();
+    const prefChannel: Channel = pc < 0.35 ? "WhatsApp" : pc < 0.5 ? "IVR" : "AI Voice";
     const channel: Channel = disposition === "Escalated" ? "Human Desk" : prefChannel;
     let paymentLink: LinkStatus = "Not shared";
-    if (stage >= 2) paymentLink = stage === 4 && r() < 0.55 ? "Paid via link" : pick(r, ["Shared", "Link clicked", "Not shared"] as const);
+    if (stage >= 2) paymentLink = stage === 4 && r() < payProfile(product.name).link ? "Paid via link" : pick(r, ["Shared", "Link clicked", "Not shared"] as const);
     const recoveredAmount = stage === 4 ? Math.round(outstanding * (0.5 + r() * 0.5)) : disposition === "Partial" ? Math.round(outstanding * 0.25) : 0;
     const phoneFull = `+91 ${pick(r, ["98", "97", "96", "93", "90", "88", "79", "70"])}${digits(r, 3)} ${digits(r, 5)}`;
     const current = bucketOf(dpd);
@@ -242,7 +276,7 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
       ptpAmount: stage === 3 ? emi : undefined,
       ptpOutcome: stage === 3 ? pick(r, ["pending", "pending", "kept", "broken"] as const) : stage === 4 ? (r() < 0.6 ? "kept" : undefined) : undefined,
       recoveredAmount,
-      recoveredAt: recoveredAmount ? new Date(now - Math.pow(r(), 1.35) * 58 * DAY).toISOString() : undefined,
+      recoveredAt: recoveredAmount ? new Date(paymentTime(product.name, now, r)).toISOString() : undefined,
       escalatedAt: disposition === "Escalated" ? new Date(now - r() * 6 * DAY).toISOString() : undefined,
       escalationReason: disposition === "Escalated" ? pick(r, ESCALATION_REASONS) : undefined,
       prefBand: weighted(r, [[0, 2], [1, 1], [2, 1], [3, 2], [4, 4]]),

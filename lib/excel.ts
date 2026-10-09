@@ -80,7 +80,7 @@ const toDisposition = (v: unknown): Disposition => {
 };
 const toChannel = (v: unknown): Channel => {
   const n = norm(str(v));
-  return n.includes("whatsapp") || n === "wa" ? "WhatsApp" : n.includes("human") || n.includes("desk") ? "Human Desk" : "AI Voice";
+  return n.includes("ivr") ? "IVR" : n.includes("whatsapp") || n === "wa" ? "WhatsApp" : n.includes("human") || n.includes("desk") ? "Human Desk" : "AI Voice";
 };
 const toSegment = (v: unknown, dpd: number): Segment => {
   const n = norm(str(v));
