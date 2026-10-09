@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning,
+  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import { ACCESS, MODULES, ROLE_LABEL, can, type ModuleGroup } from "@/lib/roles";
 import type { Filters } from "@/lib/types";
@@ -26,6 +26,9 @@ export default function Shell({ user, children }: { user: SessionUser; children:
   const [version, setVersion] = useState(0);
   const [borrowerId, setBorrowerId] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => { try { setCollapsed(localStorage.getItem("kollect.nav") === "collapsed"); } catch { /* storage blocked */ } }, []);
+  const toggleCollapsed = () => setCollapsed((c) => { try { localStorage.setItem("kollect.nav", c ? "open" : "collapsed"); } catch { /* storage blocked */ } return !c; });
   const allowed = ACCESS[user.role];
   const current = MODULES.find((m) => path.startsWith(m.href));
 
@@ -65,34 +68,35 @@ export default function Shell({ user, children }: { user: SessionUser; children:
   return (
     <AppCtx.Provider value={{ user, filters, setFilters, qs, meta, refreshMeta, scope, version, bump, openBorrower: setBorrowerId }}>
       <div className="flex min-h-screen">
-        <aside className={`fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col bg-night text-night-text transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <aside className={`fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col bg-night text-night-text transition-[transform,width] lg:sticky ${collapsed ? "lg:w-16" : ""} lg:top-0 lg:h-screen lg:translate-x-0 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}>
           <div className="flex items-center gap-2.5 px-5 pb-4 pt-5">
             <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
               <rect width="26" height="26" rx="6" fill="#0e6b50" />
               <path d="M8 6.5v13M8 13.5l7.5-7M11 11l6 8.5" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
             </svg>
-            <div className="leading-tight">
+            <div className={`leading-tight ${collapsed ? "lg:hidden" : ""}`}>
               <div className="text-[16px] font-semibold tracking-tight text-white">Kollect</div>
               <div className="text-[11px] text-night-text/80">by Predixion AI</div>
             </div>
             <button className="ml-auto text-night-text lg:hidden" aria-label="Close menu" onClick={() => setNavOpen(false)}><X size={18} /></button>
           </div>
-          <nav className="flex-1 overflow-y-auto px-3 pb-3" aria-label="Main">
+          <nav className={`no-scrollbar flex-1 overflow-y-auto pb-3 ${collapsed ? "px-3 lg:px-2" : "px-3"}`} aria-label="Main">
             {GROUPS.map((g) => {
               const items = MODULES.filter((m) => m.group === g && allowed.includes(m.key));
               if (!items.length) return null;
               return (
                 <div key={g} className="mt-3">
-                  <div className="px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-night-text/60">{g}</div>
+                  <div className={`px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-night-text/60 ${collapsed ? "lg:hidden" : ""}`}>{g}</div>
+                  {collapsed && <div className="mx-2 mb-1 hidden border-t border-white/10 lg:block" aria-hidden="true" />}
                   {items.map((m) => {
                     const Icon = ICONS[m.key];
                     const active = path.startsWith(m.href);
                     return (
-                      <Link key={m.key} href={m.href} aria-current={active ? "page" : undefined}
-                        className={`flex min-h-9 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] ${active ? "bg-night-2 font-medium text-white" : "hover:bg-night-2/60 hover:text-white"}`}>
+                      <Link key={m.key} href={m.href} aria-current={active ? "page" : undefined} title={collapsed ? m.label : undefined} aria-label={m.label}
+                        className={`flex min-h-9 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] ${collapsed ? "lg:justify-center lg:px-0" : ""} ${active ? "bg-night-2 font-medium text-white" : "hover:bg-night-2/60 hover:text-white"}`}>
                         <Icon size={16} strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
-                        {m.label}
-                        {active && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-[#4fbf95]" aria-hidden="true" />}
+                        <span className={collapsed ? "lg:hidden" : ""}>{m.label}</span>
+                        {active && <span className={`ml-auto h-1.5 w-1.5 rounded-full bg-[#4fbf95] ${collapsed ? "lg:hidden" : ""}`} aria-hidden="true" />}
                       </Link>
                     );
                   })}
@@ -100,9 +104,13 @@ export default function Shell({ user, children }: { user: SessionUser; children:
               );
             })}
           </nav>
-          <div className="flex items-center gap-2.5 border-t border-white/10 px-4 py-3">
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-night-2 text-[12px] font-semibold text-white">{initials}</span>
-            <div className="min-w-0 flex-1 leading-tight">
+          <button onClick={toggleCollapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={`mx-3 mb-2 hidden min-h-9 items-center gap-2.5 rounded-md px-2.5 text-[13px] hover:bg-night-2/60 hover:text-white lg:flex ${collapsed ? "justify-center px-0 mx-2" : ""}`}>
+            {collapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <><PanelLeftClose size={16} aria-hidden="true" />Collapse</>}
+          </button>
+          <div className={`flex items-center gap-2.5 border-t border-white/10 px-4 py-3 ${collapsed ? "lg:flex-col lg:px-2" : ""}`}>
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-night-2 text-[12px] font-semibold text-white">{initials}</span>
+            <div className={`min-w-0 flex-1 leading-tight ${collapsed ? "lg:hidden" : ""}`}>
               <div className="truncate text-[13px] text-white">{user.name}</div>
               <div className="text-[11px]">{ROLE_LABEL[user.role]}</div>
             </div>
