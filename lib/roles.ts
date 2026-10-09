@@ -1,12 +1,13 @@
 import type { Role } from "./types";
 
-export type ModuleKey = "home" | "performance" | "borrowers" | "followups" | "channels" | "audit" | "compliance" | "grievances" | "usage" | "data";
+export type ModuleKey = "home" | "performance" | "campaigns" | "borrowers" | "followups" | "channels" | "audit" | "compliance" | "grievances" | "usage" | "data";
 export type ModuleGroup = "Monitor" | "Act" | "Assure" | "Setup";
 
 export const MODULES: { key: ModuleKey; label: string; href: string; group: ModuleGroup; filters: boolean }[] = [
   { key: "home", label: "Home", href: "/home", group: "Monitor", filters: true },
   { key: "performance", label: "Performance", href: "/performance", group: "Monitor", filters: true },
   { key: "channels", label: "Channels", href: "/channels", group: "Monitor", filters: false },
+  { key: "campaigns", label: "Campaigns", href: "/campaigns", group: "Act", filters: false },
   { key: "borrowers", label: "Borrowers", href: "/borrowers", group: "Act", filters: true },
   { key: "followups", label: "Follow-ups", href: "/followups", group: "Act", filters: true },
   { key: "audit", label: "Call Audit", href: "/audit", group: "Assure", filters: true },
@@ -17,18 +18,20 @@ export const MODULES: { key: ModuleKey; label: string; href: string; group: Modu
 ];
 
 export const ACCESS: Record<Role, ModuleKey[]> = {
-  admin: ["home", "performance", "channels", "borrowers", "followups", "audit", "compliance", "grievances", "usage", "data"],
-  supervisor: ["home", "performance", "channels", "borrowers", "followups", "audit", "compliance", "grievances", "usage"],
-  operator: ["home", "borrowers", "followups", "audit", "grievances"],
+  admin: ["home", "performance", "channels", "campaigns", "borrowers", "followups", "audit", "compliance", "grievances", "usage", "data"],
+  supervisor: ["home", "performance", "channels", "campaigns", "borrowers", "followups", "audit", "compliance", "grievances", "usage"],
+  operator: ["home", "campaigns", "borrowers", "followups", "audit", "grievances"],
   client: ["home", "performance", "borrowers", "followups", "compliance", "usage"],
 };
 
 export type Action =
   | "sendLink" | "escalate" | "editCapacity" | "hideCall" | "upload"
-  | "revealPii" | "editCompliance" | "viewAudit" | "demo" | "followup" | "grievance" | "editLanguages";
+  | "revealPii" | "editCompliance" | "viewAudit" | "demo" | "followup" | "grievance" | "editLanguages" | "manageCampaigns" | "manageConnectors";
 
 export const CAN: Record<Action, Role[]> = {
   grievance: ["admin", "supervisor", "operator"],
+  manageCampaigns: ["admin", "supervisor"],
+  manageConnectors: ["admin"],
   editLanguages: ["admin", "supervisor"],
   sendLink: ["admin", "supervisor", "operator"],
   escalate: ["admin", "supervisor", "operator"],

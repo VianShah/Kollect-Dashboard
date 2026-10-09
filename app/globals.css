@@ -60,6 +60,6 @@ body { background: var(--color-ground); color: var(--color-ink); font-family: va
 @media (prefers-reduced-motion: reduce) { .toast-in, .pulse-dot { animation: none; } }
 
 /* Scroll without a visible scrollbar */
-html, body, .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
-html::-webkit-scrollbar, body::-webkit-scrollbar, .no-scrollbar::-webkit-scrollbar { display: none; }
+html, body, .no-scrollbar, .overflow-x-auto, .overflow-y-auto { scrollbar-width: none; -ms-overflow-style: none; }
+html::-webkit-scrollbar, body::-webkit-scrollbar, .no-scrollbar::-webkit-scrollbar, .overflow-x-auto::-webkit-scrollbar, .overflow-y-auto::-webkit-scrollbar { display: none; }
 

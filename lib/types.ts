@@ -96,6 +96,56 @@ export interface Grievance {
 
 export interface GrievanceOfficer { name: string; email: string; phone: string }
 
+export type StepKind = "start" | "whatsapp" | "sms" | "voice" | "ivr" | "telecaller" | "wait" | "branch" | "end";
+export interface StepData {
+  label: string;
+  template?: string;      // whatsapp / sms
+  agent?: string;         // voice / ivr: agent code, or "auto" for the borrower's language
+  seats?: number;         // telecaller
+  waitHours?: number;     // wait
+  slot?: "any" | "morning" | "afternoon" | "evening"; // when to send, inside the calling window
+  condition?: "answered" | "paid" | "promised" | "replied" | "disputed"; // branch
+}
+export interface StepNode { id: string; kind: StepKind; x: number; y: number; data: StepData }
+export interface StepEdge { id: string; source: string; target: string; label?: "yes" | "no" }
+
+export type CampaignStatus = "Draft" | "Scheduled" | "Running" | "Paused" | "Completed";
+export interface CampaignAudience {
+  source: "filters" | "list";
+  products: string[]; segments: string[]; languages: string[]; portfolios: string[];
+  minDpd: number; maxDpd: number;
+  loanIds: string[];
+}
+export interface CampaignStats { reached: number; attempts: number; promises: number; paid: number; collected: number }
+export interface Campaign {
+  id: string;
+  name: string;
+  goal: string;
+  status: CampaignStatus;
+  audience: CampaignAudience;
+  nodes: StepNode[];
+  edges: StepEdge[];
+  startAt: string;
+  endAt: string;
+  salaryWeekBoost: boolean;
+  dailyCap: number;
+  members: string[]; // borrower ids frozen at launch
+  stats: CampaignStats;
+  createdBy: string;
+  updatedAt: string;
+  launchedAt?: string;
+}
+
+export type ConnectorKind = "telephony" | "ivr" | "whatsapp" | "sms" | "payments" | "crm" | "webhook";
+export interface Connector {
+  kind: ConnectorKind;
+  provider: string;
+  status: "Connected" | "Not connected" | "Error";
+  config: Record<string, string>; // secret fields stay on the server; API responses mask them
+  lastTest?: string;
+  lastResult?: string;
+}
+
 export interface FollowUp {
   id: string;
   borrowerId: string;
@@ -175,6 +225,9 @@ export interface Store {
   languages: string[];
   grievances: Grievance[];
   grievanceSeq: number;
+  campaigns: Campaign[];
+  campaignSeq: number;
+  connectors: Connector[];
   gro: GrievanceOfficer;
   events: LiveEvent[];
   eventSeq: number;

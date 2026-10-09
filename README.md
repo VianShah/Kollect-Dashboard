@@ -14,7 +14,8 @@ Demo logins (password `kollect123`): `admin`, `supervisor`, `operator`, `client`
 | Monitor | Home | "What changed" notes, 10 KPIs with period deltas and sparklines; every card drills into the records behind it; today's follow-ups and latest escalations |
 | | Performance | Funnel, dispositions, non-contact reasons, connect rate by time of day, **month-end forecast**, **roll-rate matrix**, breakdowns by segment / product / channel / region |
 | | Channels | Global concurrency; languages; **communication channels** (Voice agents, IVR, WhatsApp, SMS on lines of 100 concurrent sessions each, plus a few telecaller seats at one call each); campaigns share their channel's capacity |
-| Act | Borrowers | Queue with drill-down filters; select a borrower for **Borrower 360** |
+| Act | Campaigns | Create, draft, edit, import/export (JSON config) and run campaigns. Visual workflow canvas (WhatsApp, SMS, AI voice, IVR, telecaller, wait, if/else) with agent and template selection; audience by filters or uploaded loan-ID list; schedule, salary-week boost and daily cap; compliance checks before launch; pause / resume / stop; live results. **Integrations** tab: telephony (Voiz), IVR and SMS (Vobiz), WhatsApp (Interakt), payment links, loan system / CRM and webhooks, with masked keys and test connection (simulated in the demo) |
+| | Borrowers | Queue with drill-down filters; select a borrower for **Borrower 360** |
 | | Follow-ups | Calendar of call-backs borrowers asked for; mark done / missed |
 | Assure | Call Audit | Call log with language, AI/recording notice and recording link; client-visibility toggle |
 | | Compliance | Calling window, daily/weekly caps, do-not-call, WhatsApp opt-in, disclosure; flags feed; narrowable rules; **audit trail** with integrity check |

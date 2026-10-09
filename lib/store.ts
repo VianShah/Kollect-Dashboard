@@ -6,6 +6,7 @@ import { DAY, istMidnight } from "./time";
 import { ESCALATION_REASONS, FOLLOWUP_NOTES, STORE_VERSION, campaignsFor, connectChance, followupSlot, generateStore, pickCampaign } from "./mock";
 import { canContact, clampRules, windowOpen } from "./contact";
 import { rebalance } from "./lines";
+import { audienceOf } from "./campaigns";
 import type { AuditEntry, Disposition, LiveEvent, Role, ScenarioKey, Store } from "./types";
 
 const FILE = path.join(process.cwd(), "data", "store.json");
@@ -39,7 +40,7 @@ export function loadScenario(scenario: ScenarioKey) {
   const prev = g.__kollect;
   const s = generateStore(scenario, Date.now(), prev?.languages);
   if (prev) {
-    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro; s.lines = prev.lines;
+    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro; s.lines = prev.lines; s.connectors = prev.connectors;
     s.grievances = prev.grievances; s.grievanceSeq = prev.grievanceSeq;
     rebalance(s); // campaigns share the lender's own line counts, not the defaults
   }
@@ -86,11 +87,33 @@ export function tick(s: Store): boolean {
   const elapsed = now - s.demo.lastTick;
   if (elapsed < 3500) return false;
   s.demo.lastTick = now;
+  advanceCampaigns(s, now);
   if (!windowOpen(s.compliance, now)) return false; // like a real dialler, nothing goes out after hours
   const n = Math.min(3, Math.max(1, Math.floor(elapsed / 4500)));
   const camps = campaignsFor(s.scenario, s.languages);
   for (let i = 0; i < n; i++) simulateCall(s, camps, now - (n - 1 - i) * 1200);
   return true;
+}
+
+/** Starts scheduled campaigns whose start time has passed and closes running ones past their end. */
+export function advanceCampaigns(s: Store, now = Date.now()) {
+  for (const c of s.campaigns) {
+    if (c.status === "Scheduled" && Date.parse(c.startAt) <= now) {
+      c.members = audienceOf(s, c.audience).filter((b) => b.disposition !== "Dispute").map((b) => b.id);
+      c.status = "Running"; c.launchedAt = new Date(now).toISOString();
+    }
+    if (c.status === "Running" && Date.parse(c.endAt) <= now) c.status = "Completed";
+  }
+}
+
+function creditCampaigns(s: Store, borrowerId: string, connected: boolean, cls: Disposition, amount: number) {
+  for (const c of s.campaigns) {
+    if (c.status !== "Running" || !c.members.includes(borrowerId)) continue;
+    c.stats.attempts++;
+    if (connected) c.stats.reached++;
+    if (cls === "PTP") c.stats.promises++;
+    if (cls === "Paid") { c.stats.paid++; c.stats.collected += amount; }
+  }
 }
 
 function simulateCall(s: Store, camps: ReturnType<typeof campaignsFor>, t: number) {
@@ -120,6 +143,7 @@ function simulateCall(s: Store, camps: ReturnType<typeof campaignsFor>, t: numbe
     title: `${b.name} · ${connected ? cls : "No answer"}`,
     detail: `${camp.channel} · ${camp.code} · ${connected ? `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}` : "not answered"}`,
   });
+  creditCampaigns(s, b.id, connected, cls, b.emi);
   if (!connected) return;
 
   if (cls === "PTP") {

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, PanelLeftClose, PanelLeftOpen,
+  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, Megaphone, PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import { ACCESS, MODULES, ROLE_LABEL, can, type ModuleGroup } from "@/lib/roles";
 import type { Filters } from "@/lib/types";
@@ -13,7 +13,7 @@ import { localMeta } from "./local";
 import Notifications from "./Notifications";
 import BorrowerDrawer from "./BorrowerDrawer";
 
-const ICONS = { home: LayoutDashboard, performance: BarChart3, borrowers: Users, followups: CalendarDays, channels: Radio, audit: ShieldCheck, compliance: Scale, grievances: MessageSquareWarning, usage: Gauge, data: Database };
+const ICONS = { home: LayoutDashboard, performance: BarChart3, campaigns: Megaphone, borrowers: Users, followups: CalendarDays, channels: Radio, audit: ShieldCheck, compliance: Scale, grievances: MessageSquareWarning, usage: Gauge, data: Database };
 const GROUPS: ModuleGroup[] = ["Monitor", "Act", "Assure", "Setup"];
 const RANGE_LABEL: Record<Filters["range"], string> = { today: "Today", "7d": "Last 7 days", "30d": "Last 30 days", mtd: "Month to date", custom: "Custom range" };
 const DEFAULT_FILTERS: Filters = { range: "30d", portfolio: "all", product: "all", channel: "all" };
