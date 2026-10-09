@@ -13,7 +13,7 @@ Demo logins (password `kollect123`): `admin`, `supervisor`, `operator`, `client`
 |---|---|---|
 | Monitor | Home | "What changed" notes, 10 KPIs with period deltas and sparklines; every card drills into the records behind it; today's follow-ups and latest escalations |
 | | Performance | Funnel, dispositions, non-contact reasons, connect rate by time of day, **month-end forecast**, **roll-rate matrix**, breakdowns by segment / product / channel / region |
-| | Channels | Live concurrency per agent, grouped by product; rebalance capacity |
+| | Channels | Global concurrency; languages; **communication channels** (Voice agents, IVR, WhatsApp, SMS on lines of 100 concurrent sessions each, plus a few telecaller seats at one call each); campaigns share their channel's capacity |
 | Act | Borrowers | Queue with drill-down filters; select a borrower for **Borrower 360** |
 | | Follow-ups | Calendar of call-backs borrowers asked for; mark done / missed |
 | Assure | Call Audit | Call log with language, AI/recording notice and recording link; client-visibility toggle |

@@ -5,6 +5,7 @@ export type Bucket = "Current" | "1–30" | "31–60" | "61–90" | "90+";
 export type Disposition = "Paid" | "PTP" | "Partial" | "Callback" | "Dispute" | "No Contact" | "Escalated";
 export type LinkStatus = "Not shared" | "Shared" | "Link clicked" | "Paid via link";
 export type Channel = "AI Voice" | "WhatsApp" | "Human Desk";
+export type CommChannel = "Voice agents" | "IVR" | "WhatsApp" | "SMS" | "Telecallers";
 export type TouchChannel = "WhatsApp" | "SMS" | "Email";
 export type TouchStatus = "Sent" | "Delivered" | "Read" | "Opened" | "Clicked" | "Replied" | "Failed";
 
@@ -166,7 +167,8 @@ export interface Store {
   touches: Touch[];
   followUps: FollowUp[];
   agents: Agent[];
-  globalMax: number;
+  /** Lines (or telecaller seats) per communication channel; live is only used for channels without campaigns. */
+  lines: Record<CommChannel, { lines: number; live: number }>;
   recoveryTargetPct: number;
   compliance: ComplianceRules;
   /** Languages the lender has switched on for outreach; one voice campaign exists per language and product. */

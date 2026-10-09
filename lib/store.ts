@@ -5,6 +5,7 @@ import path from "path";
 import { DAY, istMidnight } from "./time";
 import { ESCALATION_REASONS, FOLLOWUP_NOTES, STORE_VERSION, campaignsFor, connectChance, followupSlot, generateStore, pickCampaign } from "./mock";
 import { canContact, clampRules, windowOpen } from "./contact";
+import { rebalance } from "./lines";
 import type { AuditEntry, Disposition, LiveEvent, Role, ScenarioKey, Store } from "./types";
 
 const FILE = path.join(process.cwd(), "data", "store.json");
@@ -38,8 +39,9 @@ export function loadScenario(scenario: ScenarioKey) {
   const prev = g.__kollect;
   const s = generateStore(scenario, Date.now(), prev?.languages);
   if (prev) {
-    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro;
+    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro; s.lines = prev.lines;
     s.grievances = prev.grievances; s.grievanceSeq = prev.grievanceSeq;
+    rebalance(s); // campaigns share the lender's own line counts, not the defaults
   }
   saveStore(s);
   return s;

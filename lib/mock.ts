@@ -4,8 +4,9 @@ import type {
 import { BANDS, DAY, IST, istDay, istMidnight } from "./time";
 import { DEFAULT_LANGUAGES, FALLBACK_LANGUAGE, REGION_LANGUAGES, langCode, voiceOf } from "./languages";
 import { renderMessage, type TemplateName } from "./messages";
+import { COMM_CHANNELS, DEFAULT_LINES, rebalance } from "./lines";
 
-export const STORE_VERSION = 3;
+export const STORE_VERSION = 4;
 
 // Seeded RNG so the server and the offline fallback produce the same dataset.
 export function rng(seed: number) {
@@ -171,8 +172,7 @@ export function syncAgents(s: Store) {
   const have = new Map(s.agents.map((a) => [a.code, a]));
   let n = s.agents.length;
   s.agents = wanted.map((c) => have.get(c.code) ?? makeAgent(c, `A${++n}`, s.agents[0]?.business ?? SCENARIOS[s.scenario].label));
-  const total = s.agents.reduce((x, a) => x + a.max, 0);
-  s.globalMax = Math.max(s.globalMax, Math.round(total * 0.8));
+  rebalance(s, "Voice agents");
 }
 
 export const DEFAULT_GRO ={ name: "Grievance Redressal Officer", email: "grievance@kollect.example", phone: "1800 000 0000" };
@@ -366,11 +366,8 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
   }
   followUps.sort((a, b) => a.at.localeCompare(b.at));
 
-  const agents: Agent[] = camps.map((c, k) => {
-    const a = makeAgent(c, `A${k + 1}`, def.label);
-    return { ...a, live: Math.floor(r() * (a.max + 1)), resolved: Math.floor(r() * 4), open: Math.floor(r() * 3) };
-  });
-  const totalMax = agents.reduce((s, a) => s + a.max, 0);
+  const agents: Agent[] = camps.map((c, k) => ({ ...makeAgent(c, `A${k + 1}`, def.label), resolved: Math.floor(r() * 4), open: Math.floor(r() * 3) }));
+  const lines = Object.fromEntries(COMM_CHANNELS.map((c) => [c.key, { lines: DEFAULT_LINES[c.key], live: 0 }])) as Store["lines"];
 
   const byLoan = new Map(borrowers.map((b) => [b.loanId, b]));
   const events: LiveEvent[] = calls.slice(0, 12).reverse().map((c, k) => {
@@ -396,13 +393,13 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
     });
   });
 
-  return {
+  const store: Store = {
     v: STORE_VERSION,
     scenario,
     portfolios: def.portfolios,
     products: def.products.map((p) => p.name),
     borrowers, calls, touches, followUps, agents,
-    globalMax: Math.round(totalMax * 0.8),
+    lines,
     recoveryTargetPct: 7,
     compliance: { windowStart: 8, windowEnd: 19, maxPerDay: 3, maxPerWeek: 10, respectDnd: true, requireWaConsent: true },
     languages: [...languages],
@@ -417,6 +414,10 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
     source: "mock",
     updatedAt: new Date(now).toISOString(),
   };
+  rebalance(store);
+  for (const a of store.agents) a.live = Math.floor(a.max * (0.35 + r() * 0.35));
+  for (const c of COMM_CHANNELS) if (!c.agentChannel) store.lines[c.key].live = Math.floor(store.lines[c.key].lines * c.perLine * (0.35 + r() * 0.35));
+  return store;
 }
 
 export const todayKey = (now = Date.now()) => istDay(now);
