@@ -74,6 +74,54 @@ export interface Touch {
   status: TouchStatus;
   text: string;
   language?: string;
+  /** Meta's message id (wamid) for a real WhatsApp send, so delivery updates can find this record. */
+  waId?: string;
+  error?: string;
+}
+
+/** A message template as approved (or not) by Meta, cached by "Sync templates". */
+export interface WaTemplate {
+  id: string;
+  name: string;
+  language: string;
+  status: string; // APPROVED, PENDING, REJECTED, PAUSED, DISABLED
+  category: string;
+  rejectedReason?: string;
+  body: string;
+  header?: string;
+  bodyParams: string[];   // "1", "2" … or named placeholders, in order
+  headerParams: string[];
+}
+
+export type WaStatus = "accepted" | "sent" | "delivered" | "read" | "failed" | "received";
+/** One WhatsApp message in or out, with Meta's own status and error. */
+export interface WaMessage {
+  id: string;            // wamid
+  ts: string;
+  direction: "out" | "in";
+  to: string;            // digits; for inbound this is the sender
+  kind: "template" | "text";
+  template?: string;
+  language?: string;
+  text: string;
+  status: WaStatus;
+  statusAt?: string;
+  error?: { code?: number; title: string; detail?: string };
+  borrowerId?: string;
+  loanId?: string;
+  campaignId?: string;
+  redirectedFrom?: string; // test mode: the borrower's own number the message was meant for
+  by?: string;
+}
+
+export interface WaState {
+  templates: WaTemplate[];
+  templatesSyncedAt?: string;
+  messages: WaMessage[];
+  /** Per WhatsApp number: when they last wrote to us (opens the 24-hour free-text window). */
+  contacts: Record<string, { lastInboundAt: string; name?: string }>;
+  lastWebhookAt?: string;
+  health?: { checkedAt: string; ok: boolean; number?: Record<string, string>; error?: { code?: number; title: string; detail?: string } };
 }
 
 export type GrievanceStatus = "Open" | "In progress" | "Resolved";
@@ -263,6 +311,8 @@ export interface Store {
   audit: AuditEntry[];
   auditSeq: number;
   demo: { live: boolean; lastTick: number };
+  /** Real WhatsApp (Meta Cloud API) state. Created on first use, so older store files keep loading. */
+  wa?: WaState;
   source: "mock" | "excel" | "api";
   updatedAt: string;
 }

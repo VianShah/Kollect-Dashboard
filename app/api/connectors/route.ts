@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { connectorDef, maskConnector } from "@/lib/campaigns";
 import { audit, saveStore } from "@/lib/store";
+import { fetchHealth, syncWaConnector, waConfig, waState } from "@/lib/whatsapp";
 import type { ConnectorKind } from "@/lib/types";
 
 export async function GET() {
@@ -19,6 +20,17 @@ export async function PATCH(req: Request) {
   const c = store.connectors.find((x) => x.kind === body.kind as ConnectorKind);
   if (!c) return bad("Unknown integration", 404);
   const def = connectorDef(c.kind);
+
+  // WhatsApp runs on Meta's Cloud API with keys in env vars, so "test" is a real check and the keys can't be edited here.
+  if (c.kind === "whatsapp" && !waConfig().missing.length) {
+    if (!body.test) return bad("WhatsApp keys are set in the server's environment variables. Use the WhatsApp tab to check the connection.", 409);
+    const h = await fetchHealth();
+    waState(store).health = { checkedAt: new Date().toISOString(), ok: h.ok, ...(h.ok ? { number: h.number } : { error: h.error }) };
+    syncWaConnector(store);
+    audit(store, user, "connector_test", def.title, c.lastResult ?? "");
+    saveStore(store);
+    return NextResponse.json({ connector: maskConnector(c) });
+  }
 
   if (body.disconnect) {
     c.status = "Not connected"; c.config = {}; c.lastResult = "Disconnected";

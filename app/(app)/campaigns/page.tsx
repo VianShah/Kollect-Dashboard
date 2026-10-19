@@ -12,6 +12,7 @@ import { can } from "@/lib/roles";
 import { d, inr, num } from "@/lib/format";
 import type { Campaign, CampaignAudience, Connector, StepEdge, StepNode } from "@/lib/types";
 
+const WhatsAppPanel = dynamic(() => import("@/components/WhatsAppPanel"), { ssr: false, loading: () => <div className="card h-40 animate-pulse bg-sunk/60" /> });
 const WorkflowCanvas = dynamic(() => import("@/components/WorkflowCanvas"), { ssr: false, loading: () => <div className="card h-[520px] animate-pulse bg-sunk/60" /> });
 
 type CampaignView = Omit<Campaign, "members"> & { memberCount: number; audienceSize: number };
@@ -29,7 +30,7 @@ const download = (name: string, body: unknown) => {
 
 export default function CampaignsPage() {
   const { user } = useApp();
-  const [tab, setTab] = useState<"Campaigns" | "Integrations">("Campaigns");
+  const [tab, setTab] = useState<"Campaigns" | "WhatsApp" | "Integrations">("Campaigns");
   const [openId, setOpenId] = useState<string | null>(null);
   const { data, error, reload, setData } = useApi<Data>("/api/campaigns", () => ({ campaigns: [], connectors: [], agents: [], prompts: [], companies: [], options: { products: [], portfolios: [], languages: [] } }));
   if (error) return <ErrorNote text={error} />;
@@ -38,8 +39,9 @@ export default function CampaignsPage() {
   if (open) return <Editor key={open.id} campaign={open} data={data} onBack={() => { setOpenId(null); reload(); }} onSaved={(c) => setData({ ...data, campaigns: data.campaigns.map((x) => (x.id === c.id ? c : x)) })} />;
   return (
     <>
-      <Tabs tabs={["Campaigns", "Integrations"] as const} value={tab} onChange={setTab} />
+      <Tabs tabs={["Campaigns", "WhatsApp", "Integrations"] as const} value={tab} onChange={setTab} />
       {tab === "Campaigns" ? <List data={data} canManage={can(user.role, "manageCampaigns")} onOpen={setOpenId} reload={reload} />
+        : tab === "WhatsApp" ? <WhatsAppPanel />
         : <Integrations connectors={data.connectors} canEdit={can(user.role, "manageConnectors")} reload={reload} />}
     </>
   );
@@ -309,6 +311,11 @@ function Integrations({ connectors, canEdit, reload }: { connectors: Connector[]
                   ))}
                   <div className="flex gap-2"><button className="btn btn-primary">Save</button><button type="button" className="btn btn-ghost" onClick={() => setEditing(null)}>Cancel</button></div>
                 </form>
+              ) : canEdit && def.kind === "whatsapp" && c?.provider === "Meta Cloud API" ? (
+                <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
+                  <button className="btn" onClick={() => call(def.kind, { test: true })}>Test connection</button>
+                  <span className="text-[12px] text-muted">Keys are set in the server's environment. Send and track messages on the WhatsApp tab.</span>
+                </div>
               ) : canEdit && (
                 <div className="mt-auto flex flex-wrap gap-2 pt-3">
                   <button className="btn" onClick={() => { setForm({ provider: c?.provider ?? def.provider, config: { ...(c?.config ?? {}) } }); setEditing(def.kind); }}>{status === "Not connected" ? "Set up" : "Edit"}</button>

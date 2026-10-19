@@ -7,12 +7,19 @@ import { ESCALATION_REASONS, FOLLOWUP_NOTES, STORE_VERSION, campaignsFor, connec
 import { canContact, clampRules, windowOpen } from "./contact";
 import { rebalance } from "./lines";
 import { audienceOf } from "./campaigns";
+import { syncWaConnector } from "./whatsapp";
 import type { AuditEntry, Disposition, LiveEvent, Role, ScenarioKey, Store } from "./types";
 
 const FILE = path.join(process.cwd(), "data", "store.json");
 const g = globalThis as unknown as { __kollect?: Store; __kollectSaved?: number };
 
 export function getStore(): Store {
+  const s = loadStore();
+  syncWaConnector(s); // cheap, no network: reflects env vars and the last real Meta check
+  return s;
+}
+
+function loadStore(): Store {
   if (g.__kollect) return g.__kollect;
   try {
     if (fs.existsSync(FILE)) {
@@ -42,6 +49,7 @@ export function loadScenario(scenario: ScenarioKey) {
   if (prev) {
     s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro; s.lines = prev.lines; s.connectors = prev.connectors; s.prompts = prev.prompts;
     s.grievances = prev.grievances; s.grievanceSeq = prev.grievanceSeq;
+    s.wa = prev.wa; // real WhatsApp history and templates survive a scenario switch
     rebalance(s); // campaigns share the lender's own line counts, not the defaults
   }
   saveStore(s);

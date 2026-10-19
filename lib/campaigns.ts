@@ -13,8 +13,9 @@ export const CONNECTOR_DEFS: ConnectorDef[] = [
     fields: [{ key: "account", label: "Account ID" }, { key: "apiKey", label: "API key", secret: true }, { key: "callerId", label: "Caller ID", placeholder: "+91 80 0000 0000" }] },
   { kind: "ivr", title: "IVR", purpose: "Recorded reminder calls with keypad options", provider: "Vobiz", providers: ["Vobiz", "Other IVR provider"],
     fields: [{ key: "account", label: "Account ID" }, { key: "apiKey", label: "API key", secret: true }, { key: "flowId", label: "Default IVR flow ID" }] },
-  { kind: "whatsapp", title: "WhatsApp Business", purpose: "Templates, bot conversations and payment links to opted-in borrowers", provider: "Interakt", providers: ["Interakt", "Other WhatsApp BSP"],
-    fields: [{ key: "number", label: "WhatsApp number", placeholder: "+91 …" }, { key: "apiKey", label: "API key", secret: true }, { key: "webhook", label: "Callback URL" }] },
+  { kind: "whatsapp", title: "WhatsApp Business", purpose: "Approved templates and replies to opted-in borrowers, sent through Meta's WhatsApp Cloud API", provider: "Meta Cloud API", providers: ["Meta Cloud API"],
+    // Keys live in env vars (WHATSAPP_*), never here. These fields are shown for reference only.
+    fields: [{ key: "number", label: "WhatsApp number" }, { key: "phoneNumberId", label: "Phone number ID" }, { key: "wabaId", label: "WhatsApp account ID" }] },
   { kind: "sms", title: "SMS gateway", purpose: "DLT-registered reminder and payment-link texts", provider: "Vobiz", providers: ["Vobiz", "Other SMS gateway"],
     fields: [{ key: "senderId", label: "Sender ID (DLT header)" }, { key: "entityId", label: "DLT entity ID" }, { key: "apiKey", label: "API key", secret: true }] },
   { kind: "payments", title: "Payment links", purpose: "Creates payment links and reports payments back", provider: "Not set", providers: ["Not set", "Payment gateway"],
