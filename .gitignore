@@ -4,7 +4,9 @@ data/store.json
 next-env.d.ts
 *.tsbuildinfo
 
-# Secrets: never commit
+# Secrets: never commit any env file, whatever it is called.
+# Only the blank template (.env.example) may be committed.
 .env
-.env*.local
-render.env
+.env.*
+*.env
+!.env.example
