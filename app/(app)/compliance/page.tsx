@@ -19,6 +19,10 @@ const ACTION_LABEL: Record<string, string> = {
   compliance_rules: "Changed compliance rules", data_upload: "Uploaded data", data_reset: "Reset data", demo_scenario: "Switched demo lender",
   demo_reset: "Reset demo", demo_live_traffic: "Toggled live traffic", followup_create: "Scheduled follow-up", followup_status: "Updated follow-up",
   login: "Signed in", login_failed: "Failed sign-in", contact_blocked: "Blocked a contact", languages_changed: "Changed languages",
+  goal_set: "Set a goal", handoff_cold: "Cold transfer", handoff_hot: "Hot transfer with AI summary", handoff_accept: "Took an escalation", handoff_resolve: "Resolved an escalation",
+  prompt_create: "Created a prompt", prompt_version: "Saved a prompt version", prompt_rollback: "Rolled back a prompt", prompt_test: "Ran a prompt test call", prompt_publish: "Published a prompt",
+  campaign_create: "Created a campaign", campaign_edit: "Edited a campaign", campaign_launch: "Launched a campaign", campaign_pause: "Paused a campaign", campaign_resume: "Resumed a campaign", campaign_stop: "Stopped a campaign",
+  connector_save: "Changed an integration", connector_test: "Tested an integration", connector_disconnect: "Disconnected an integration", channel_lines: "Changed channel lines",
   grievance_create: "Logged a complaint", grievance_status: "Updated a complaint", grievance_officer: "Changed grievance officer", ingest: "Dialler feed received",
 };
 

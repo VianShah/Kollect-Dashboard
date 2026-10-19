@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
+import { can } from "@/lib/auth";
 import { CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, audienceOf, audienceSummary, blankAudience, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
 import { audit, saveStore } from "@/lib/store";
 import { DAY } from "@/lib/time";
@@ -68,7 +69,7 @@ export async function POST(req: Request) {
   const { store, user } = a;
   const body = await req.json().catch(() => ({}));
   if (body.preview) return NextResponse.json(audienceSummary(store, cleanAudience(body.preview)));
-  if (user.role !== "admin" && user.role !== "supervisor") return bad("Only admins and supervisors can change campaigns", 403);
+  if (!can(user, "manageCampaigns")) return bad("Only Super Admins and supervisors can change campaigns", 403);
 
   if (body.create || body.import) {
     const src = body.import ?? {};

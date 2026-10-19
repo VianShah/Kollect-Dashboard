@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { Bell, BellOff, CalendarClock, Download, IndianRupee, Phone, PhoneMissed, Siren, Handshake, X } from "lucide-react";
 import type { LiveEvent } from "@/lib/types";
 import { ago } from "@/lib/format";
+import { can } from "@/lib/roles";
 import { useApp } from "./ctx";
 
 interface Prefs { muted: boolean; calls: boolean; outcomes: boolean; escalations: boolean; autoDownload: boolean }
@@ -27,7 +28,8 @@ function download(url: string) {
 
 /** Polls the live feed, raises toasts, keeps the bell's history and auto-downloads escalation files. */
 export default function Notifications() {
-  const { openBorrower, bump } = useApp();
+  const { openBorrower, bump, user } = useApp();
+  const handlesEscalations = can(user.role, "escalate");
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [unread, setUnread] = useState(0);
@@ -66,11 +68,11 @@ export default function Notifications() {
     if (p.outcomes) for (const e of outcomes) toast({ tone: e.type === "followup" ? "neutral" : "good", title: e.title, detail: e.detail, borrowerId: e.borrowerId }, 6000);
     if (escalations.length) {
       const ids = escalations.map((e) => e.borrowerId).filter(Boolean) as string[];
-      const file = ids.length ? `/api/escalations/file?ids=${ids.join(",")}` : undefined;
+      const file = ids.length && handlesEscalations ? `/api/escalations/file?ids=${ids.join(",")}` : undefined;
       if (p.escalations) for (const e of escalations) toast({ tone: "bad", title: e.title, detail: e.detail, borrowerId: e.borrowerId, file }, 10000);
       if (p.autoDownload && file) download(file);
     }
-  }, [toast]);
+  }, [toast, handlesEscalations]);
 
   useEffect(() => {
     let stop = false;

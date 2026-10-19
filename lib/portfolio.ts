@@ -1,0 +1,99 @@
+import type { Borrower, Goal, Store } from "./types";
+import { DAY, istDay, istMonthEnd, istMonthStart } from "./time";
+import { bucketOf } from "./mock";
+
+export type RiskTier = "High" | "Medium" | "Low";
+export const TIERS: RiskTier[] = ["High", "Medium", "Low"];
+const BUCKET_ORDER = ["Current", "1–30", "31–60", "61–90", "90+"];
+
+/**
+ * 0–100, higher is riskier. Bureau score carries the most weight, then how late the account is now,
+ * then its payment history: broken promises and rolling into a worse bucket push it up, a recent payment pulls it down.
+ */
+export function riskScore(b: Borrower, now = Date.now()) {
+  const bureau = ((850 - Math.max(500, Math.min(850, b.experian))) / 350) * 45;
+  const late = (Math.min(b.dpd, 120) / 120) * 35;
+  let history = 0;
+  if (b.ptpOutcome === "broken") history += 12;
+  if (b.prevBucket && BUCKET_ORDER.indexOf(bucketOf(b.dpd)) > BUCKET_ORDER.indexOf(b.prevBucket)) history += 8;
+  if (b.recoveredAt && Date.parse(b.recoveredAt) > now - 45 * DAY) history -= 10;
+  return Math.max(0, Math.min(100, Math.round(bureau + late + history)));
+}
+export const tierOf = (score: number): RiskTier => (score >= 50 ? "High" : score >= 28 ? "Medium" : "Low");
+
+export const TIER_PLAYBOOK: Record<RiskTier, { channels: string; approach: string }> = {
+  High: { channels: "Telecaller + AI voice (firm)", approach: "Call early in the cycle, push for a part-payment or settlement plan, hand hardship cases to the human desk." },
+  Medium: { channels: "AI voice in the evening + WhatsApp link", approach: "Link in the afternoon, call after 5 pm, follow up broken promises within 48 hours." },
+  Low: { channels: "WhatsApp + IVR reminders", approach: "Reminders before the due date and in salary week; most pay from the link without a call." },
+};
+
+export function computePortfolio(s: Store, company: string, now = Date.now()) {
+  const inCo = (p: string) => company === "all" || p === company;
+  const bs = s.borrowers.filter((b) => inCo(b.portfolio));
+  const scored = bs.map((b) => ({ b, score: riskScore(b, now) })).map((x) => ({ ...x, tier: tierOf(x.score) }));
+  const book = bs.reduce((n, b) => n + b.outstanding, 0);
+  const ms = istMonthStart(now), me = istMonthEnd(now);
+  const paidIn = (list: Borrower[]) => list.filter((b) => b.recoveredAt && Date.parse(b.recoveredAt) >= ms).reduce((n, b) => n + b.recoveredAmount, 0);
+  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, c) => a + c, 0) / xs.length : 0);
+
+  const tiers = TIERS.map((tier) => {
+    const rows = scored.filter((x) => x.tier === tier).map((x) => x.b);
+    const outstanding = rows.reduce((n, b) => n + b.outstanding, 0);
+    return {
+      tier, accounts: rows.length, outstanding, share: book ? (outstanding / book) * 100 : 0,
+      avgBureau: Math.round(avg(rows.map((b) => b.experian))), avgDpd: Math.round(avg(rows.map((b) => b.dpd))),
+      brokenRate: rows.length ? (rows.filter((b) => b.ptpOutcome === "broken").length / rows.length) * 100 : 0,
+      collectedMtd: paidIn(rows), ...TIER_PLAYBOOK[tier],
+    };
+  });
+
+  const products = [...new Set(bs.map((b) => b.product))].map((product) => {
+    const rows = scored.filter((x) => x.b.product === product);
+    const outstanding = rows.reduce((n, x) => n + x.b.outstanding, 0);
+    return {
+      product, accounts: rows.length, outstanding, collectedMtd: paidIn(rows.map((x) => x.b)),
+      mix: TIERS.map((t) => ({ tier: t, outstanding: rows.filter((x) => x.tier === t).reduce((n, x) => n + x.b.outstanding, 0) })),
+    };
+  }).sort((a, b) => b.outstanding - a.outstanding);
+
+  const loans = new Set(bs.map((b) => b.loanId));
+  const since = now - 30 * DAY;
+  const mixCount = new Map<string, number>();
+  for (const c of s.calls) if (loans.has(c.loanId) && Date.parse(c.ts) > since) mixCount.set(c.channel === "Human Desk" ? "Telecaller" : c.channel, (mixCount.get(c.channel === "Human Desk" ? "Telecaller" : c.channel) ?? 0) + 1);
+  for (const t of s.touches) if (loans.has(t.loanId) && Date.parse(t.ts) > since) mixCount.set(t.channel === "WhatsApp" ? "WhatsApp" : t.channel, (mixCount.get(t.channel) ?? 0) + 1);
+  const totalMix = [...mixCount.values()].reduce((a, c) => a + c, 0);
+  const channelMix = [...mixCount.entries()].map(([channel, n]) => ({ channel, contacts: n, share: totalMix ? (n / totalMix) * 100 : 0 })).sort((a, b) => b.contacts - a.contacts);
+
+  const elapsed = Math.max(1, Math.round((now - ms) / DAY));
+  const days = Math.round((me - ms) / DAY);
+  const goals = s.goals.filter((g) => inCo(g.company)).map((g) => {
+    const rows = s.borrowers.filter((b) => b.portfolio === g.company && (g.product === "All products" || b.product === g.product));
+    const actual = paidIn(rows);
+    const projected = (actual / elapsed) * days;
+    const pct = g.target ? (actual / g.target) * 100 : 0;
+    const status = projected >= g.target ? "On track" : projected >= g.target * 0.85 ? "At risk" : "Behind";
+    return { ...g, actual, projected, pct, status };
+  });
+
+  return {
+    company, companies: s.portfolios, month: istDay(now).slice(0, 7), elapsed, days,
+    book, accounts: bs.length, collectedMtd: paidIn(bs), tiers, products, channelMix, goals,
+    target: goals.reduce((n, g) => n + (g.product === "All products" ? g.target : 0), 0),
+  };
+}
+
+export function seedGoals(s: Store, now: number): Goal[] {
+  const ms = istMonthStart(now);
+  const out: Goal[] = [];
+  let n = 0;
+  for (const company of s.portfolios) {
+    const bs = s.borrowers.filter((b) => b.portfolio === company);
+    const book = bs.reduce((a, b) => a + b.outstanding, 0);
+    out.push({ id: `G${++n}`, company, product: "All products", target: Math.round((book * 0.06) / 10000) * 10000, month: istDay(ms).slice(0, 7), setBy: "manager" });
+    for (const product of s.products) {
+      const pb = bs.filter((b) => b.product === product).reduce((a, b) => a + b.outstanding, 0);
+      if (pb) out.push({ id: `G${++n}`, company, product, target: Math.round((pb * 0.06) / 10000) * 10000, month: istDay(ms).slice(0, 7), setBy: "manager" });
+    }
+  }
+  return out;
+}

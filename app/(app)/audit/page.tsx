@@ -1,6 +1,8 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { qcFor } from "@/lib/prompts";
 import { Eye, EyeOff, X } from "lucide-react";
 import { useApp } from "@/components/ctx";
 import { useApi } from "@/components/useApi";
@@ -32,6 +34,7 @@ function Audit() {
   const [noNoticeOnly, setNoNoticeOnly] = useState(false);
   const [page, setPage] = useState(0);
   const canHide = can(user.role, "hideCall");
+  const canPrompts = can(user.role, "managePrompts");
 
   useEffect(() => { setDisp(params.get("classification") ?? "all"); setDrop(params.get("drop") ?? "all"); }, [params]);
   useEffect(() => setPage(0), [campaign, disp, drop, minDur, hiddenOnly, lang, noNoticeOnly]);
@@ -86,7 +89,7 @@ function Audit() {
       <Card pad={false}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
-            <thead><tr><th>Date / time (IST)</th><th>Phone</th><th>Loan ID</th><th>Call ID</th><th>Campaign</th><th className="text-right">Duration</th><th>Language</th><th>Classification</th><th>Drop-off</th><th>AI / recording notice</th><th>Recording</th><th>Client view</th></tr></thead>
+            <thead><tr><th>Date / time (IST)</th><th>Phone</th><th>Loan ID</th><th>Call ID</th><th>Campaign</th><th className="text-right">Duration</th><th>Language</th><th>Classification</th><th>Drop-off</th><th>AI / recording notice</th><th>Recording</th><th>QC</th><th>Client view</th></tr></thead>
             <tbody>
               {rows.slice(page * PAGE, page * PAGE + PAGE).map((c) => (
                 <tr key={c.id} className="hover:bg-sunk/40">
@@ -106,6 +109,16 @@ function Audit() {
                   </td>
                   <td className="text-[12.5px]">
                     {c.recordingUrl ? <a className="text-brand hover:underline" href={c.recordingUrl} target="_blank" rel="noopener noreferrer">Listen</a> : <span className="text-muted">Not linked</span>}
+                  </td>
+                  <td className="text-[12.5px]">
+                    {(() => {
+                      const issue = c.connected && c.disclosed === false ? "disclosure" : c.classification === "Dispute" && c.channel === "AI Voice" ? "dispute" : null;
+                      if (!issue) return <span className="text-muted">Pass</span>;
+                      const q = qcFor(c.product, issue);
+                      return canPrompts
+                        ? <Link className="font-medium text-bad hover:underline" href={`/prompts?prompt=${q.promptId}&block=${q.blockId}`}>Fail · {q.label}</Link>
+                        : <span className="font-medium text-bad">Fail · {q.label}</span>;
+                    })()}
                   </td>
                   <td>
                     {canHide

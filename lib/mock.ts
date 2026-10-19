@@ -6,8 +6,10 @@ import { DEFAULT_LANGUAGES, FALLBACK_LANGUAGE, REGION_LANGUAGES, langCode, voice
 import { renderMessage, type TemplateName } from "./messages";
 import { COMM_CHANNELS, DEFAULT_LINES, rebalance } from "./lines";
 import { defaultConnectors, seedCampaigns } from "./campaigns";
+import { seedGoals } from "./portfolio";
+import { seedPrompts } from "./prompts";
 
-export const STORE_VERSION = 6;
+export const STORE_VERSION = 7;
 
 // Seeded RNG so the server and the offline fallback produce the same dataset.
 export function rng(seed: number) {
@@ -441,7 +443,10 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
     grievances,
     grievanceSeq: grievances.length,
     campaigns: [],
-    campaignSeq: 3,
+    campaignSeq: 4,
+    goals: [],
+    handoffs: {},
+    prompts: seedPrompts(now),
     connectors: defaultConnectors(),
     gro: { ...DEFAULT_GRO },
     events,
@@ -454,6 +459,7 @@ export function generateStore(scenario: ScenarioKey = "nbfc", now = Date.now(), 
   };
   rebalance(store);
   store.campaigns = seedCampaigns(store, now);
+  store.goals = seedGoals(store, now);
   for (const a of store.agents) a.live = Math.floor(a.max * (0.35 + r() * 0.35));
   for (const c of COMM_CHANNELS) if (!c.agentChannel) store.lines[c.key].live = Math.floor(store.lines[c.key].lines * c.perLine * (0.35 + r() * 0.35));
   return store;

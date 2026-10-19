@@ -26,9 +26,10 @@ export const passwordMatches = (given: string, expected: string) => {
 };
 
 export const USERS: (SessionUser & { password: string })[] = [
-  { username: "admin", password: "kollect123", name: "Asha Menon", role: "admin" },
+  { username: "superadmin", password: "kollect123", name: "Asha Menon", role: "superadmin" },
+  { username: "manager", password: "kollect123", name: "Karan Mehra", role: "manager" },
   { username: "supervisor", password: "kollect123", name: "Sameer Kapoor", role: "supervisor" },
-  { username: "operator", password: "kollect123", name: "Omkar Patil", role: "operator" },
+  { username: "telecaller", password: "kollect123", name: "Omkar Patil", role: "telecaller" },
   { username: "client", password: "kollect123", name: "Client viewer", role: "client", portfolio: "Alpha NBFC" },
 ];
 

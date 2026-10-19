@@ -137,7 +137,7 @@ export function seedCampaigns(s: Store, now: number): Campaign[] {
     id, name, goal, status, audience: { ...blankAudience(), ...audience }, nodes: wf.nodes, edges: wf.edges,
     startAt: new Date(now + startOffset * DAY).toISOString(), endAt: new Date(now + (startOffset + days) * DAY).toISOString(),
     salaryWeekBoost: true, dailyCap: 3, members: [], stats: { reached: 0, attempts: 0, promises: 0, paid: 0, collected: 0 },
-    createdBy: "admin", updatedAt: new Date(now).toISOString(),
+    createdBy: "superadmin", updatedAt: new Date(now).toISOString(),
   });
   const list = [
     base("C1", "Salary-week push · BNPL", "Collect before the money is spent: links in the afternoon, calls after 5 pm", "Running", { products: ["BNPL"], segments: ["Pre Due", "Post Due (0–30)"] }, -3, 10),

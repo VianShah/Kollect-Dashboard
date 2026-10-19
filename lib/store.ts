@@ -40,7 +40,7 @@ export function loadScenario(scenario: ScenarioKey) {
   const prev = g.__kollect;
   const s = generateStore(scenario, Date.now(), prev?.languages);
   if (prev) {
-    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro; s.lines = prev.lines; s.connectors = prev.connectors;
+    s.audit = prev.audit; s.auditSeq = prev.auditSeq; s.compliance = prev.compliance; s.gro = prev.gro; s.lines = prev.lines; s.connectors = prev.connectors; s.prompts = prev.prompts;
     s.grievances = prev.grievances; s.grievanceSeq = prev.grievanceSeq;
     rebalance(s); // campaigns share the lender's own line counts, not the defaults
   }

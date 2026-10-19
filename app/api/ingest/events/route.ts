@@ -74,7 +74,7 @@ export async function POST(req: Request) {
   }
   if (calls || agents) {
     store.source = "api";
-    audit(store, { username: "dialer-api", role: "operator" }, "ingest", "events", `${calls} call(s), ${agents} agent update(s), ${rejected} rejected`);
+    audit(store, { username: "dialer-api", role: "telecaller" }, "ingest", "events", `${calls} call(s), ${agents} agent update(s), ${rejected} rejected`);
     saveStore(store);
   }
   return NextResponse.json({ calls, agents, rejected });

@@ -1,17 +1,14 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ROLE_LABEL, ROLE_SUMMARY } from "@/lib/roles";
+import type { Role } from "@/lib/types";
 
-const DEMO = [
-  ["admin", "Super Admin", "Everything, including data upload and rules"],
-  ["supervisor", "Supervisor", "Capacity, QA and the audit trail"],
-  ["operator", "Operator", "Borrower queue, follow-ups and call audit"],
-  ["client", "Client", "Their own portfolio, read-only"],
-] as const;
+const DEMO: Role[] = ["superadmin", "manager", "supervisor", "telecaller", "client"];
 
 export default function Login() {
   const router = useRouter();
-  const [username, setU] = useState("admin");
+  const [username, setU] = useState("superadmin");
   const [password, setP] = useState("kollect123");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,11 +53,11 @@ export default function Login() {
           <fieldset className="mt-8">
             <legend className="label">Demo accounts · password kollect123</legend>
             <div className="mt-2 divide-y divide-line rounded-md border border-line bg-surface">
-              {DEMO.map(([u, role, what]) => (
+              {DEMO.map((u) => (
                 <button type="button" key={u} onClick={() => { setU(u); setP("kollect123"); }} aria-pressed={username === u}
                   className={`flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-sunk/60 ${username === u ? "bg-brand-soft" : ""}`}>
-                  <span className="w-20 font-mono text-[12.5px]">{u}</span>
-                  <span className="min-w-0"><span className="block text-[13px] font-medium">{role}</span><span className="block text-[12px] text-muted">{what}</span></span>
+                  <span className="w-24 shrink-0 font-mono text-[12.5px]">{u}</span>
+                  <span className="min-w-0"><span className="block text-[13px] font-medium">{ROLE_LABEL[u]}</span><span className="block text-[12px] text-muted">{ROLE_SUMMARY[u]}</span></span>
                 </button>
               ))}
             </div>

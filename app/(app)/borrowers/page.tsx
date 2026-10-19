@@ -15,6 +15,8 @@ const SEGMENTS = ["All", "Pre Due", "Post Due (0–30)", "Post Due (30–90)", "
 const DISPOSITIONS = ["Paid", "PTP", "Partial", "Callback", "Dispute", "No Contact", "Escalated"];
 const STAGES = ["Assigned", "Contacted", "Engaged", "PTP", "Recovered"];
 const BUCKETS: Bucket[] = ["Current", "1–30", "31–60", "61–90", "90+"];
+/** Demo assignment: a quarter of open accounts that need a person belong to the signed-in telecaller. */
+const inMyQueue = (b: Borrower) => b.disposition !== "Paid" && ["Callback", "Escalated", "PTP", "Dispute"].includes(b.disposition) && (parseInt(b.id.replace(/\D/g, ""), 10) || 0) % 4 === 0;
 const tier = (s: number) => (s >= 750 ? "Prime" : s >= 650 ? "Near-prime" : "Subprime");
 
 /** Drill-down filters arrive as URL params from KPI cards, funnels, charts and the roll-rate matrix. */
@@ -46,7 +48,8 @@ export default function BorrowersPage() {
 }
 
 function Borrowers() {
-  const { qs, filters, scope, openBorrower } = useApp();
+  const { qs, filters, scope, openBorrower, user } = useApp();
+  const [mine, setMine] = useState(user.role === "telecaller");
   const params = useSearchParams();
   const router = useRouter();
   const dr = useMemo(() => drill(new URLSearchParams(params.toString())), [params]);
@@ -58,17 +61,17 @@ function Borrowers() {
   const [page, setPage] = useState(0);
 
   useEffect(() => { const open = params.get("open"); if (open) openBorrower(open); }, [params, openBorrower]);
-  useEffect(() => setPage(0), [params, seg, q, disp, lang]);
+  useEffect(() => setPage(0), [params, seg, q, disp, lang, mine]);
 
   const languages = useMemo(() => [...new Set((data?.borrowers ?? []).map((b) => b.language))].sort(), [data]);
   const rows = useMemo(() => {
     const list = (data?.borrowers ?? []).filter((b) =>
-      dr.test(b) && (seg === "All" || b.segment === seg) && (disp === "all" || b.disposition === disp) && (lang === "all" || b.language === lang) &&
+      dr.test(b) && (!mine || inMyQueue(b)) && (seg === "All" || b.segment === seg) && (disp === "all" || b.disposition === disp) && (lang === "all" || b.language === lang) &&
       (!q || `${b.name} ${b.loanId} ${b.id}`.toLowerCase().includes(q.toLowerCase())));
     if (dr.sort === "dpd") list.sort((a, b) => b.dpd - a.dpd);
     else if (dr.sort === "outstanding") list.sort((a, b) => b.outstanding - a.outstanding);
     return list;
-  }, [data, dr, seg, disp, q, lang]);
+  }, [data, dr, seg, disp, q, lang, mine]);
 
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
@@ -95,6 +98,12 @@ function Borrowers() {
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
+        {user.role !== "client" && (
+          <div className="seg" role="group" aria-label="Queue">
+            <button aria-pressed={mine} onClick={() => setMine(true)}>My queue</button>
+            <button aria-pressed={!mine} onClick={() => setMine(false)}>All accounts</button>
+          </div>
+        )}
         <div className="seg" role="group" aria-label="Segment">
           {SEGMENTS.map((s) => <button key={s} aria-pressed={seg === s} onClick={() => setSeg(s)}>{s}</button>)}
         </div>

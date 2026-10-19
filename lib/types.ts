@@ -1,4 +1,4 @@
-export type Role = "admin" | "supervisor" | "operator" | "client";
+export type Role = "superadmin" | "manager" | "supervisor" | "telecaller" | "client";
 export type ScenarioKey = "nbfc" | "bank" | "bnpl";
 export type Segment = "Pre Due" | "Post Due (0–30)" | "Post Due (30–90)" | "Post Due (90+)";
 export type Bucket = "Current" | "1–30" | "31–60" | "61–90" | "90+";
@@ -136,6 +136,29 @@ export interface Campaign {
   launchedAt?: string;
 }
 
+/** A monthly collection target for one company, either across the book or for one product. */
+export interface Goal { id: string; company: string; product: string; target: number; month: string; setBy: string }
+
+/** Escalation handoff. Cold = transfer only. Hot = transfer plus an AI summary sent to the telecaller on WhatsApp or the CRM. */
+export interface HandoffState { mode?: "cold" | "hot"; owner?: string; status: "Waiting" | "With telecaller" | "Resolved"; summarySentVia?: "WhatsApp" | "CRM"; outcome?: string; updatedAt?: string }
+
+export type BlockCategory =
+  | "identity" | "opening" | "verification" | "reason" | "negotiation" | "objection" | "complaint"
+  | "escalation" | "payment" | "callback" | "closing" | "guardrails";
+export type Tone = "aggressive" | "pushy" | "silent" | "supportive" | "compliant";
+export interface PromptBlock {
+  id: string; category: BlockCategory; source: string; product: string; tone: Tone;
+  text: string; testCalls: number; passRate: number; locked?: boolean;
+}
+export interface PromptVersion {
+  v: number; blocks: { blockId: string; category: BlockCategory; text: string }[]; note: string; by: string; at: string;
+  test?: { passed: boolean; score: number; at: string; failedBlocks: string[] };
+}
+export interface PromptDoc {
+  id: string; client: string; product: string; tone: Tone; languages: string[]; ticket: number; dpd: string;
+  status: "Draft" | "Tested" | "Published"; current: number; versions: PromptVersion[]; tools: string[]; source?: boolean; updatedAt: string;
+}
+
 export type ConnectorKind = "telephony" | "ivr" | "whatsapp" | "sms" | "payments" | "crm" | "webhook";
 export interface Connector {
   kind: ConnectorKind;
@@ -227,6 +250,9 @@ export interface Store {
   grievanceSeq: number;
   campaigns: Campaign[];
   campaignSeq: number;
+  goals: Goal[];
+  handoffs: Record<string, HandoffState>;
+  prompts: PromptDoc[];
   connectors: Connector[];
   gro: GrievanceOfficer;
   events: LiveEvent[];
