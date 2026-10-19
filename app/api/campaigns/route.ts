@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { can } from "@/lib/auth";
-import { CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, audienceOf, audienceSummary, blankAudience, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
+import { CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, audienceOf, audienceSummary, blankAudience, campaignDetail, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
+import { riskScore, tierOf, type RiskTier } from "@/lib/portfolio";
 import { audit, saveStore } from "@/lib/store";
 import { DAY } from "@/lib/time";
 import type { Campaign, CampaignAudience, StepEdge, StepKind, StepNode, Store } from "@/lib/types";
@@ -50,11 +51,22 @@ function cleanFlow(nodes: unknown, edges: unknown): { nodes: StepNode[]; edges: 
 }
 const view = (s: Store, c: Campaign) => ({ ...c, members: undefined, memberCount: c.members.length, audienceSize: audienceSummary(s, c.audience).eligible });
 
-export async function GET() {
+export async function GET(req: Request) {
   const a = await requireUser(undefined, "campaigns");
   if ("res" in a) return a.res;
   const { store } = a;
+  const id = new URL(req.url).searchParams.get("id");
+  if (id) {
+    const c = store.campaigns.find((x) => x.id === id);
+    if (!c) return bad("Campaign not found", 404);
+    const plan = audienceOf(store, c.audience).filter((b) => b.disposition !== "Dispute");
+    const tiers = { High: 0, Medium: 0, Low: 0 } as Record<RiskTier, number>;
+    for (const b of plan) tiers[tierOf(riskScore(b))]++;
+    return NextResponse.json({ detail: campaignDetail(store, c), plan: { tiers, accounts: plan.length } });
+  }
   return NextResponse.json({
+    prompts: store.prompts.filter((p) => p.status === "Published").map((p) => ({ id: p.id, client: p.client, product: p.product, tone: p.tone, version: p.current })),
+    companies: store.portfolios,
     campaigns: store.campaigns.map((c) => view(store, c)),
     connectors: store.connectors.map(maskConnector),
     agents: store.agents.filter((x) => x.channel === "AI Voice" || x.channel === "IVR").map((x) => ({ code: x.code, name: x.name, channel: x.channel, language: x.language, product: x.product })),
@@ -80,6 +92,8 @@ export async function POST(req: Request) {
     const now = Date.now();
     const c: Campaign = {
       id: `C${++store.campaignSeq}`, name: str(body.import ? src.name : body.create.name, 80) || "Untitled campaign", goal: str(src.goal, 200),
+      company: store.portfolios.includes(src.company) ? src.company : "All companies", target: num(src.target, 0, 1e10, 0),
+      promptId: store.prompts.find((p) => p.id === src.promptId && p.status === "Published")?.id,
       status: "Draft", audience: cleanAudience(src.audience), nodes: flow.nodes, edges: flow.edges,
       startAt: new Date(now + DAY).toISOString(), endAt: new Date(now + 8 * DAY).toISOString(),
       salaryWeekBoost: src.salaryWeekBoost !== false, dailyCap: num(src.dailyCap, 1, store.compliance.maxPerDay, store.compliance.maxPerDay),
@@ -141,6 +155,12 @@ export async function PATCH(req: Request) {
   if (!EDITABLE.includes(c.status)) return bad("Pause the campaign before editing it");
   if (body.name !== undefined) c.name = str(body.name, 80) || c.name;
   if (body.goal !== undefined) c.goal = str(body.goal, 200);
+  if (body.company !== undefined) c.company = store.portfolios.includes(body.company) ? body.company : "All companies";
+  if (body.target !== undefined) c.target = num(body.target, 0, 1e10, c.target);
+  if (body.promptId !== undefined) {
+    if (body.promptId && !store.prompts.some((p) => p.id === body.promptId && p.status === "Published")) return bad("Choose a published prompt");
+    c.promptId = body.promptId || undefined;
+  }
   if (body.audience) c.audience = cleanAudience(body.audience);
   if (body.nodes || body.edges) {
     const flow = cleanFlow(body.nodes ?? c.nodes, body.edges ?? c.edges);

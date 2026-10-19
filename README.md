@@ -6,7 +6,16 @@ Next.js 15 + Tailwind 4 + Recharts. Built as a client-facing demo that also runs
 npm install && npm run dev   # http://localhost:3000
 ```
 
-Demo logins (password `kollect123`): `admin`, `supervisor`, `operator`, `client`.
+Demo logins (password `kollect123`): `superadmin`, `manager`, `supervisor`, `telecaller`, `client`.
+
+**Phase 2 is a front-end POC on realistic mock data.** The LLM prompt assembly, tone rewrite, AI handoff summaries and prompt test calls are simulated in `lib/prompts.ts` and `lib/handoffs.ts`; engineering replaces them with the real model, Voiz test lines and backend services.
+
+## Phase 2 additions
+- **Five roles** (`lib/roles.ts`): Super Admin (Predixion, everything plus the Prompt Library), Manager (all companies: portfolio, goals, channel mix, agents, reports), Supervisor, Telecaller (own queue, escalations, call-backs, dispositions) and Client (read-only results, compliance, usage). Navigation, pages and APIs are gated per role.
+- **Portfolio & goals**: book split into high / medium / low risk from bureau score, days late and payment history (`lib/portfolio.ts`), with the channel approach for each tier; monthly goals per company and product with pace and status; product portfolios and channel mix.
+- **Escalations**: handoff queue with cold transfer (transfer only) and hot transfer (transfer plus an AI summary via WhatsApp or CRM), a 4-hour waiting target, "my queue" and resolution outcomes.
+- **Prompt Library** (Super Admin): three anonymised production prompts (Northwind Finserv, Cartwheel Pay, Lumen Credit, invented names) split into 12 tagged block types with test-call counts and pass rates; a new-client wizard (product, ticket size, DPD bucket, languages, tone) that assembles the best-proven blocks and rewrites them for the tone, listing tools and variables; a drag-and-drop editor with side-by-side diff against the source block, versions and rollback, a test call that must pass before publishing, a length meter against the ~13-page target, and QC failures from Conversations linked back to the block that caused them. Disclosure, complaint and compliance blocks are locked and never rewritten. Replace the placeholder block text with the real anonymised prompts.
+- **Campaign journey**: every campaign opens on a Before / During / After bar. Before = goal and target, voice agent (published prompt + voices + tools), audience risk mix, workflow, audience, schedule and launch checks. During = collected vs target and pace, funnel, connect rate by hour, channel activity and cost, escalations and a live feed. After = attainment, cost and return, cumulative collections against target, what worked, results by channel, product and language, a downloadable report and "run again as a draft".
 
 ## Modules
 | Group | Module | What it does |
@@ -51,9 +60,10 @@ Set `SESSION_SECRET` (24+ random characters) and `INGEST_KEY`; the app refuses t
 ## Roles
 | Role | Modules | Can |
 |---|---|---|
-| admin | all | everything, incl. upload and compliance rules |
-| supervisor | all but Data | capacity, languages, hide calls, audit trail, complaints, reveal |
-| operator | Home, Borrowers, Follow-ups, Call Audit, Grievances | send link, escalate, follow-ups, complaints, reveal |
-| client | Home, Performance, Borrowers, Follow-ups, Compliance, Usage | read-only, own portfolio, visible calls only |
+| superadmin | all, incl. Prompt Library and Data | everything: prompts, integrations, compliance rules, upload |
+| manager | Portfolio & goals, Home, Performance, Channels & agents, Campaigns, Compliance, Usage | set goals; view campaigns, agents and reports across companies |
+| supervisor | Home, Performance, Channels & agents, Campaigns, Accounts, Escalations, Call-backs, Conversations, Compliance, Grievances, Usage | run campaigns, capacity, languages, hide calls, audit trail, handoffs |
+| telecaller | Home, Campaigns, Channels & agents, Accounts (my queue), Escalations, Call-backs, Conversations | send link, escalate, handoffs, follow-ups, complaints, reveal |
+| client | Home, Performance, Compliance, Usage | read-only, own portfolio, visible calls only |
 
 Every data route also checks that the role may open the matching page, not just the action. Auth is demo-grade (hardcoded users, signed cookie, 5 failed sign-ins lock for 15 minutes). Swap `lib/auth.ts` for SSO/JWT and the store for a database before production. All times are IST.

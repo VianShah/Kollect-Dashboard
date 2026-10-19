@@ -6,6 +6,7 @@ import { useApp } from "@/components/ctx";
 import { post, useApi } from "@/components/useApi";
 import { Badge, Card, Empty, ErrorNote, Kpi, Loading, Tabs } from "@/components/ui";
 import type { AgentOption } from "@/components/WorkflowCanvas";
+import { After, During, GoalAndAgent, StageBar, stageFor, type Stage } from "@/components/CampaignStages";
 import { CONNECTOR_DEFS, stepDef } from "@/lib/campaigns";
 import { can } from "@/lib/roles";
 import { d, inr, num } from "@/lib/format";
@@ -14,7 +15,8 @@ import type { Campaign, CampaignAudience, Connector, StepEdge, StepNode } from "
 const WorkflowCanvas = dynamic(() => import("@/components/WorkflowCanvas"), { ssr: false, loading: () => <div className="card h-[520px] animate-pulse bg-sunk/60" /> });
 
 type CampaignView = Omit<Campaign, "members"> & { memberCount: number; audienceSize: number };
-interface Data { campaigns: CampaignView[]; connectors: Connector[]; agents: AgentOption[]; options: { products: string[]; portfolios: string[]; languages: string[] } }
+interface PromptOption { id: string; client: string; product: string; tone: string; version: number }
+interface Data { campaigns: CampaignView[]; connectors: Connector[]; agents: AgentOption[]; prompts: PromptOption[]; companies: string[]; options: { products: string[]; portfolios: string[]; languages: string[] } }
 interface Check { errors: string[]; warnings: string[]; audience: { total: number; eligible: number; outstanding: number; excluded: { disputed: number; doNotCall: number; noWhatsApp: number }; unmatched: number } }
 
 const SEGMENTS = ["Pre Due", "Post Due (0–30)", "Post Due (30–90)", "Post Due (90+)"];
@@ -29,7 +31,7 @@ export default function CampaignsPage() {
   const { user } = useApp();
   const [tab, setTab] = useState<"Campaigns" | "Integrations">("Campaigns");
   const [openId, setOpenId] = useState<string | null>(null);
-  const { data, error, reload, setData } = useApi<Data>("/api/campaigns", () => ({ campaigns: [], connectors: [], agents: [], options: { products: [], portfolios: [], languages: [] } }));
+  const { data, error, reload, setData } = useApi<Data>("/api/campaigns", () => ({ campaigns: [], connectors: [], agents: [], prompts: [], companies: [], options: { products: [], portfolios: [], languages: [] } }));
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
   const open = data.campaigns.find((c) => c.id === openId);
@@ -75,7 +77,7 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
           </div>) : undefined}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
-            <thead><tr><th>Campaign</th><th>Status</th><th>Channels</th><th className="text-right">Borrowers</th><th className="text-right">Reached</th><th className="text-right">Promises</th><th className="text-right">Collected</th><th>Runs</th><th /></tr></thead>
+            <thead><tr><th>Campaign</th><th>Status</th><th>Channels</th><th className="text-right">Borrowers</th><th className="text-right">Reached</th><th className="text-right">Promises</th><th className="text-right">Collected / target</th><th>Runs</th><th /></tr></thead>
             <tbody>
               {data.campaigns.map((c) => (
                 <tr key={c.id} className="hover:bg-sunk/40">
@@ -83,7 +85,7 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
                   <td><Badge>{c.status}</Badge></td>
                   <td className="text-[12.5px]">{channelsOf(c).join(", ") || "—"}</td>
                   <td className="text-right num">{num(c.status === "Running" || c.status === "Paused" || c.status === "Completed" ? c.memberCount : c.audienceSize)}</td>
-                  <td className="text-right num">{num(c.stats.reached)}</td><td className="text-right num">{num(c.stats.promises)}</td><td className="text-right num">{inr(c.stats.collected)}</td>
+                  <td className="text-right num">{num(c.stats.reached)}</td><td className="text-right num">{num(c.stats.promises)}</td><td className="text-right num">{inr(c.stats.collected)}<span className="text-muted"> / {inr(c.target)}</span>{c.target > 0 && c.stats.collected > 0 && <div className="text-[11.5px] text-muted">{Math.round((c.stats.collected / c.target) * 100)}%</div>}</td>
                   <td className="text-[12.5px] num">{d(c.startAt)} – {d(c.endAt)}</td>
                   <td className="text-right">
                     {canManage && (
@@ -126,7 +128,8 @@ function Chips({ label, options, value, onChange, disabled }: { label: string; o
 function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; data: Data; onBack: () => void; onSaved: (c: CampaignView) => void }) {
   const { user } = useApp();
   const editable = can(user.role, "manageCampaigns") && ["Draft", "Scheduled", "Paused"].includes(campaign.status);
-  const [step, setStep] = useState<"Workflow" | "Audience" | "Schedule" | "Review & launch">("Workflow");
+  const [step, setStep] = useState<"Goal & agent" | "Workflow" | "Audience" | "Schedule" | "Review & launch">("Goal & agent");
+  const [stage, setStage] = useState<Stage>(stageFor(campaign.status));
   const [c, setC] = useState(campaign);
   const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState("");
@@ -147,7 +150,7 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
   }, [c.audience]);
 
   async function save() {
-    const r = await post("/api/campaigns", { id: c.id, name: c.name, goal: c.goal, audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
+    const r = await post("/api/campaigns", { id: c.id, name: c.name, goal: c.goal, company: c.company, target: c.target, promptId: c.promptId ?? "", audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
     if (r.ok) { setC(r.json.campaign); onSaved(r.json.campaign); setDirty(false); setMsg("Saved."); } else setMsg(r.json.error ?? "Couldn't save.");
     return r.ok;
   }
@@ -175,21 +178,20 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
       <input className="input w-full" placeholder="Goal, e.g. collect before salary is spent" value={c.goal} disabled={!editable} maxLength={200} onChange={(e) => set({ goal: e.target.value })} aria-label="Goal" />
       {msg && <p className="text-[12.5px] text-ink-2" role="status">{msg}</p>}
 
-      {(c.status === "Running" || c.status === "Paused" || c.status === "Completed") && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <Kpi label="Borrowers" value={num(c.memberCount)} sub={c.launchedAt ? `Since ${d(c.launchedAt)}` : ""} />
-          <Kpi label="Attempts" value={num(c.stats.attempts)} />
-          <Kpi label="Reached" value={num(c.stats.reached)} sub={c.stats.attempts ? `${Math.round((c.stats.reached / c.stats.attempts) * 100)}% of attempts` : ""} />
-          <Kpi label="Promises" value={num(c.stats.promises)} />
-          <Kpi label="Collected" value={inr(c.stats.collected)} tone="good" sub={`${num(c.stats.paid)} payments`} />
-        </div>
+      <StageBar stage={stage} status={c.status} onChange={setStage} />
+
+      {stage === "During" && <During campaign={c} />}
+      {stage === "After" && <After campaign={c} canManage={can(user.role, "manageCampaigns")} onDuplicate={async () => { const r = await post("/api/campaigns", { id: c.id, action: "duplicate" }); setMsg(r.ok ? "Copied as a new draft. Find it in the campaign list." : r.json.error ?? "Couldn't copy it."); }} />}
+
+      {stage === "Before" && <Tabs tabs={["Goal & agent", "Workflow", "Audience", "Schedule", "Review & launch"] as const} value={step} onChange={setStep} />}
+
+      {stage === "Before" && step === "Goal & agent" && (
+        <GoalAndAgent c={c} data={data} editable={editable} set={set} />
       )}
 
-      <Tabs tabs={["Workflow", "Audience", "Schedule", "Review & launch"] as const} value={step} onChange={setStep} />
+      {stage === "Before" && step === "Workflow" && <WorkflowCanvas nodes={c.nodes} edges={c.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} />}
 
-      {step === "Workflow" && <WorkflowCanvas nodes={c.nodes} edges={c.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} />}
-
-      {step === "Audience" && (
+      {stage === "Before" && step === "Audience" && (
         <div className="grid gap-4 xl:grid-cols-[1fr_300px]">
           <Card title="Who this campaign reaches">
             <div className="space-y-4">
@@ -235,7 +237,7 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
         </div>
       )}
 
-      {step === "Schedule" && (
+      {stage === "Before" && step === "Schedule" && (
         <Card title="When it runs" sub="Steps only send inside the calling window, and never more than the daily cap per borrower.">
           <fieldset disabled={!editable} className="grid max-w-2xl gap-4 sm:grid-cols-2">
             <label className="text-[13px] font-medium">Start (IST)<input type="datetime-local" className="input mt-1 block w-full" value={local(c.startAt)} onChange={(e) => e.target.value && set({ startAt: fromLocal(e.target.value) })} /></label>
@@ -249,7 +251,7 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
         </Card>
       )}
 
-      {step === "Review & launch" && (
+      {stage === "Before" && step === "Review & launch" && (
         <Card title="Check and launch" sub="Every step, connector and the audience are checked against the compliance rules before anything goes out.">
           <div className="flex flex-wrap gap-2">
             <button className="btn" onClick={runCheck}>Run checks</button>

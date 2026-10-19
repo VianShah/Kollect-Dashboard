@@ -121,6 +121,9 @@ export interface Campaign {
   id: string;
   name: string;
   goal: string;
+  company: string;      // lender the campaign runs for, or "All companies"
+  target: number;       // ₹ the campaign aims to collect
+  promptId?: string;    // published Prompt Library prompt the voice agents use
   status: CampaignStatus;
   audience: CampaignAudience;
   nodes: StepNode[];
