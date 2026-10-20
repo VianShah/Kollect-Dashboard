@@ -6,12 +6,13 @@ import type { Filters, Scope, Store } from "./types";
 
 type Ok = { user: SessionUser; store: Store; scope: Scope };
 
-/** `action` gates writes; `module` gates reads to the pages that role is allowed to open. */
-export async function requireUser(action?: Action, module?: ModuleKey): Promise<Ok | { res: NextResponse }> {
+/** `action` gates writes; `module` gates reads to the pages that role is allowed to open (any one of them, if a list). */
+export async function requireUser(action?: Action, module?: ModuleKey | ModuleKey[]): Promise<Ok | { res: NextResponse }> {
   const user = await getSession();
   if (!user) return { res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   if (action && !can(user, action)) return { res: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
-  if (module && !ACCESS[user.role].includes(module)) return { res: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  const modules = module === undefined ? [] : Array.isArray(module) ? module : [module];
+  if (modules.length && !modules.some((m) => ACCESS[user.role].includes(m))) return { res: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   const store = getStore();
   return { user, store, scope: scopeFor(user, store) };
 }

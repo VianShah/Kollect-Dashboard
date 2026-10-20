@@ -145,7 +145,7 @@ export function AgentStep({ c, editable, set, prompts }: {
         <dl className="mt-3 grid max-w-xl grid-cols-2 gap-y-1 text-[12.5px]">
           <dt className="text-muted">Prompt</dt><dd>{prompt.client} v{prompt.version}</dd>
           <dt className="text-muted">Tone</dt><dd>{TONES.find((t) => t.key === prompt.tone)?.label}</dd>
-          <dt className="text-muted">Voices</dt><dd>One per enabled language (Channels &amp; agents)</dd>
+          <dt className="text-muted">Voices</dt><dd>One per enabled language (Lines &amp; languages)</dd>
           <dt className="text-muted">Tools</dt><dd>Payment link, callback, escalate, transfer, WhatsApp summary</dd>
         </dl>
       ) : <p className="mt-3 text-[12.5px] text-warn">No prompt chosen. AI voice and IVR steps can&apos;t run without one.</p>}

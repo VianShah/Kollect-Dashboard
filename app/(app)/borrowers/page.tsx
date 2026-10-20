@@ -5,7 +5,8 @@ import { Download, X } from "lucide-react";
 import { useApp } from "@/components/ctx";
 import { useApi } from "@/components/useApi";
 import { localStore } from "@/components/local";
-import { Badge, Card, Empty, ErrorNote, Loading, Offline, Pager } from "@/components/ui";
+import { Badge, Card, Empty, ErrorNote, Loading, Offline, Pager, Tabs } from "@/components/ui";
+import Conversations from "@/components/Conversations";
 import { publicBorrower, scoped } from "@/lib/metrics";
 import { bucketOf } from "@/lib/mock";
 import { d, inrFull } from "@/lib/format";
@@ -49,11 +50,11 @@ export default function BorrowersPage() {
 
 function Borrowers() {
   const { qs, filters, scope, openBorrower, user } = useApp();
-  const [mine, setMine] = useState(user.role === "telecaller");
+  const [mine, setMine] = useState(false);
   const params = useSearchParams();
   const router = useRouter();
   const dr = useMemo(() => drill(new URLSearchParams(params.toString())), [params]);
-  const { data, offline, error } = useApi<{ borrowers: Borrower[] }>(`/api/borrowers?${qs}`, () => ({ borrowers: scoped(localStore(), filters, scope).borrowers.map(publicBorrower) }));
+  const { data, offline, error } = useApi<{ borrowers: Borrower[]; assignedOnly?: boolean }>(`/api/borrowers?${qs}`, () => ({ borrowers: scoped(localStore(), filters, scope).borrowers.map(publicBorrower) }));
   const [seg, setSeg] = useState(dr.segment ?? "All");
   const [q, setQ] = useState("");
   const [disp, setDisp] = useState("all");

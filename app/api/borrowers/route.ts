@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { bad, filtersFrom, requireUser } from "@/lib/api";
+import { deskScope } from "@/lib/calldesk";
 import { canContact } from "@/lib/contact";
 import { renderMessage } from "@/lib/messages";
 import { publicBorrower, scoped } from "@/lib/metrics";
@@ -9,7 +10,9 @@ export async function GET(req: Request) {
   const a = await requireUser(undefined, "borrowers");
   if ("res" in a) return a.res;
   const { borrowers } = scoped(a.store, filtersFrom(new URL(req.url)), a.scope);
-  return NextResponse.json({ borrowers: borrowers.map(publicBorrower) });
+  // Telecallers only see the accounts allocated to them through campaigns that use telecallers.
+  const desk = deskScope(a.store, a.user);
+  return NextResponse.json({ borrowers: (desk ? borrowers.filter((b) => desk.has(b.id)) : borrowers).map(publicBorrower), assignedOnly: !!desk });
 }
 
 // Actions: { id, action: "sendLink" | "escalate", reason? }

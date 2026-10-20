@@ -27,7 +27,7 @@ const payload = (s: Store) => {
 };
 
 export async function GET() {
-  const a = await requireUser(undefined, "channels");
+  const a = await requireUser(undefined, ["channels", "capacity"]);
   if ("res" in a) return a.res;
   const { store } = a;
   if (tick(store)) saveStore(store, { throttle: true });

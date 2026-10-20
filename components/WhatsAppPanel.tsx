@@ -111,7 +111,7 @@ export default function WhatsAppPanel() {
       <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
         <div className="min-w-0 space-y-4">
           {can(user.role, "sendLink")
-            ? <WaComposer data={data} canCampaign={can(user.role, "manageCampaigns")} onDone={(v) => setData(v as View)} />
+            ? <WaComposer data={data} canCampaign={can(user.role, "bulkWhatsApp")} single={!can(user.role, "bulkWhatsApp")} onDone={(v) => setData(v as View)} />
             : <Card title="Send a template"><p className="text-[13px] text-muted">Your role can't send WhatsApp messages.</p></Card>}
           <WaSends jobs={data.jobs} onChange={(v) => setData(v as View)} />
         </div>

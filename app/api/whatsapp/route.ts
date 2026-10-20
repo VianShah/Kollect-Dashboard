@@ -215,7 +215,7 @@ export async function POST(req: Request) {
     const usage = dailyUsage(s);
     const meta = { mode: cfg.mode, testNumbers: cfg.testNumbers.map(maskPhone), usage: { used: usage.used, limit: Number.isFinite(usage.limit) ? usage.limit : null, freesAt: usage.freesAt } };
     if (body.source === "campaign") {
-      if (!can(user, "manageCampaigns")) return bad("Only Super Admins and supervisors can message a whole campaign.", 403);
+      if (!can(user, "bulkWhatsApp")) return bad("Only Super Admins and supervisors can message a whole campaign.", 403);
       const c = s.campaigns.find((x) => x.id === body.campaignId);
       if (!c) return bad("Pick a campaign.", 404);
       const members = (c.members.length ? c.members.map((id) => s.borrowers.find((b) => b.id === id)).filter(Boolean) as Borrower[]
@@ -223,6 +223,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ...meta, rows: members.map((b) => ({ key: b.id, kind: "borrower", phone: b.phone, name: b.name, loanId: b.loanId, fields: fieldsOf(b), blocked: allowed(s, b) ?? undefined })) });
     }
     const raw: unknown[] = Array.isArray(body.phones) ? body.phones : [];
+    if (raw.length > 1 && !can(user, "bulkWhatsApp")) return bad("Telecallers send to one person at a time. Ask a supervisor to send to a list.", 403);
     if (raw.length > MAX_JOB_ROWS) return bad(`At most ${MAX_JOB_ROWS} numbers in one send. Split the list.`);
     const seen = new Set<string>();
     const rows = raw.map((x) => {
@@ -244,8 +245,9 @@ export async function POST(req: Request) {
     const rowsIn: { key: string; kind: string; label?: string; body: unknown; header: unknown }[] = Array.isArray(body.rows) ? body.rows : [];
     if (!rowsIn.length) return bad("No one to send to.");
     if (rowsIn.length > MAX_JOB_ROWS) return bad(`At most ${MAX_JOB_ROWS} people in one send.`);
+    if (rowsIn.length > 1 && !can(user, "bulkWhatsApp")) return bad("Telecallers send to one person at a time. Ask a supervisor to send to a list.", 403);
     const campaign = body.campaignId ? s.campaigns.find((x) => x.id === body.campaignId) : undefined;
-    if (rowsIn.some((r) => r.kind === "borrower") && !can(user, "manageCampaigns")) return bad("Only Super Admins and supervisors can message a whole campaign.", 403);
+    if (rowsIn.some((r) => r.kind === "borrower") && !can(user, "bulkWhatsApp")) return bad("Only Super Admins and supervisors can message a whole campaign.", 403);
 
     const items: WaJobItem[] = [];
     const problems: string[] = [];

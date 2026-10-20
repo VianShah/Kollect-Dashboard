@@ -1,194 +1,143 @@
 "use client";
-import { useMemo, useState } from "react";
-import { Bot, Headphones, MessageCircle, MessageSquare, PhoneCall, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Download, X } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useApp } from "@/components/ctx";
-import { post, useApi } from "@/components/useApi";
+import { useApi } from "@/components/useApi";
 import { localStore } from "@/components/local";
-import { Card, ErrorNote, Loading, Offline } from "@/components/ui";
-import { FALLBACK_LANGUAGE, LANGUAGES } from "@/lib/languages";
-import { SESSIONS_PER_LINE, channelRows } from "@/lib/lines";
-import { languageUnserved } from "@/lib/mock";
-import { can } from "@/lib/roles";
-import type { Agent, CommChannel } from "@/lib/types";
+import { C, Card, DISP_COLOR, Empty, ErrorNote, Kpi, Loading, Offline, Pager, axisProps, tooltipStyle } from "@/components/ui";
+import { scoped } from "@/lib/metrics";
+import { campaignRuns, type RunRow } from "@/lib/reports";
+import { num, shortDay, time } from "@/lib/format";
 
-interface LangRow { name: string; code: string; voice: string; script: string; enabled: boolean; borrowers: number }
-type ChannelRow = ReturnType<typeof channelRows>[number];
-interface Data {
-  agents: Agent[]; channels: ChannelRow[]; total: { live: number; capacity: number; lines: number; seats: number };
-  languages: LangRow[]; fallback: string; unserved: number;
-}
+interface Data { runs: RunRow[]; total: number; products: string[] }
+const CHANNEL_LABEL: Record<string, string> = { "AI Voice": "AI voice", IVR: "IVR", WhatsApp: "WhatsApp bot", "Human Desk": "Telecallers" };
+const pct = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "—");
 
-const ICON: Record<CommChannel, typeof Bot> = { "Voice agents": Bot, IVR: PhoneCall, WhatsApp: MessageCircle, SMS: MessageSquare, Telecallers: Headphones };
-const n = (v: number) => v.toLocaleString("en-IN");
-
-function Meter({ live, max, wide = false }: { live: number; max: number; wide?: boolean }) {
-  const p = Math.min(100, (live / (max || 1)) * 100);
-  return (
-    <div className="flex items-center gap-2">
-      <div className={`h-1.5 rounded-full bg-sunk ${wide ? "w-32" : "w-24"}`}><div className={`h-1.5 rounded-full ${p >= 85 ? "bg-bad" : "bg-brand"}`} style={{ width: `${p}%` }} /></div>
-      <span className="text-[12px] num">{n(live)}/{n(max)}</span>
-    </div>
-  );
-}
-
-export default function Channels() {
-  const { user, meta, refreshMeta } = useApp();
-  const canEdit = can(user.role, "editCapacity");
-  const fallback = (): Data => {
+/** One row per campaign run: which product, when it ran, the campaign code, how hard it ran and what it got. */
+export default function CampaignReport() {
+  const { qs, filters, scope } = useApp();
+  const { data, offline, error } = useApi<Data>(`/api/reports?${qs}`, () => {
     const s = localStore();
-    const channels = channelRows(s);
-    return {
-      agents: s.agents, channels,
-      total: {
-        live: channels.reduce((x, c) => x + c.live, 0), capacity: channels.reduce((x, c) => x + c.capacity, 0),
-        lines: channels.filter((c) => c.unit === "line").reduce((x, c) => x + c.lines, 0), seats: channels.filter((c) => c.unit === "seat").reduce((x, c) => x + c.lines, 0),
-      },
-      fallback: FALLBACK_LANGUAGE,
-      languages: LANGUAGES.map((l) => ({ ...l, enabled: s.languages.includes(l.name), borrowers: s.borrowers.filter((b) => b.language === l.name).length })),
-      unserved: s.borrowers.filter((b) => languageUnserved(b, s.languages)).length,
-    };
-  };
-  const { data, setData, offline, error } = useApi<Data>("/api/channels", fallback, 5000);
+    const runs = campaignRuns(s, scoped(s, filters, scope).calls);
+    return { runs, total: runs.length, products: s.products };
+  });
   const [product, setProduct] = useState("all");
-  const [lang, setLang] = useState("all");
-  const [langMsg, setLangMsg] = useState("");
-  const [lineMsg, setLineMsg] = useState("");
-  const groups = useMemo(() => {
-    const list = (data?.agents ?? []).filter((a) => (product === "all" || a.product === product || a.product === "All") && (lang === "all" || a.language === lang || a.language === "Multilingual"));
-    const m = new Map<string, Agent[]>();
-    list.forEach((a) => m.set(a.product, [...(m.get(a.product) ?? []), a]));
-    return [...m.entries()];
-  }, [data, product, lang]);
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(0);
+  const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => setPage(0), [product, q, qs]);
+
+  const rows = useMemo(() => (data?.runs ?? []).filter((r) => (product === "all" || r.product === product) && (!q || r.code.toLowerCase().includes(q.toLowerCase()))), [data, product, q]);
+  const byProduct = useMemo(() => (data?.products ?? []).map((p) => {
+    const rs = (data?.runs ?? []).filter((r) => r.product === p);
+    return { product: p, runs: rs.length, calls: rs.reduce((n, r) => n + r.calls, 0), connected: rs.reduce((n, r) => n + r.connected, 0), promises: rs.reduce((n, r) => n + r.promises, 0), peak: Math.max(0, ...rs.map((r) => r.peak)) };
+  }), [data]);
+
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
+  const PAGE = 25, pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  const calls = rows.reduce((n, r) => n + r.calls, 0), connected = rows.reduce((n, r) => n + r.connected, 0);
+  const sel = rows.find((r) => r.id === open) ?? data.runs.find((r) => r.id === open);
 
-  async function patch(body: object) {
-    const r = await post("/api/channels", body, "PATCH");
-    if (r.ok) { setData(r.json); refreshMeta(); }
-    return r;
+  function exportCsv() {
+    const head = ["Product", "Company", "Date", "Start", "End", "Campaign code", "Channel", "Language", "Peak concurrency", "Concurrency set", "Calls made", "Connected", "Promises", "Payments", "Talk minutes"];
+    const lines = rows.map((r) => [r.product, r.portfolio, r.day, time(r.start), time(r.end), r.code, CHANNEL_LABEL[r.channel] ?? r.channel, r.language, r.peak, r.concurrency, r.calls, r.connected, r.promises, r.paid, r.talkMinutes].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","));
+    const url = URL.createObjectURL(new Blob(["﻿" + [head.join(","), ...lines].join("\n")], { type: "text/csv" }));
+    Object.assign(document.createElement("a"), { href: url, download: "campaign-report.csv" }).click();
+    URL.revokeObjectURL(url);
   }
-  async function toggleLanguage(name: string, on: boolean) {
-    if (!data) return;
-    const next = data.languages.filter((l) => (l.name === name ? on : l.enabled)).map((l) => l.name);
-    const r = await patch({ languages: next });
-    setLangMsg(r.ok ? `${name} ${on ? "switched on. Voice campaigns were added for every product." : "switched off. Its voice campaigns were removed."}` : r.json.error ?? "Couldn't change the language.");
-  }
-  async function setLines(c: ChannelRow, lines: number) {
-    const r = await patch({ channel: c.key, lines });
-    setLineMsg(r.ok ? `${c.key}: ${lines} ${c.unit}${lines === 1 ? "" : "s"}, ${n(lines * c.perLine)} concurrent${c.campaigns ? ". Shared evenly across its campaigns." : "."}` : r.json.error ?? "Couldn't change the lines.");
-  }
-  const pctUsed = Math.min(100, (data.total.live / (data.total.capacity || 1)) * 100);
 
   return (
     <>
       <Offline show={offline} />
-      <Card title="Global capacity" sub={`Concurrent calls and conversations across every channel: ${data.total.lines} lines of ${SESSIONS_PER_LINE} plus ${data.total.seats} telecaller seats. Refreshes every 5 seconds.`}>
-        <div className="flex items-baseline gap-2"><span className="text-[32px] font-semibold leading-none num">{n(data.total.live)}</span><span className="text-muted num">of {n(data.total.capacity)} concurrent sessions in use</span></div>
-        <div className="mt-3 h-2.5 rounded-full bg-sunk"><div className={`h-2.5 rounded-full ${pctUsed >= 85 ? "bg-bad" : "bg-brand"}`} style={{ width: `${pctUsed}%` }} /></div>
-      </Card>
-
-      <Card title="Languages" sub={canEdit
-        ? "Switch on the languages you will call and message in. Each one gets its own voice campaign for every product. Borrowers are reached in their own language when it is on."
-        : "Languages the lender has switched on for calls and messages."}>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-          {data.languages.map((l) => (
-            <label key={l.name} className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-[13px] ${l.enabled ? "border-brand/40 bg-brand-soft" : "border-line bg-surface"} ${canEdit && l.name !== data.fallback ? "cursor-pointer" : ""}`}>
-              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-[var(--color-brand)]" checked={l.enabled}
-                disabled={!canEdit || offline || l.name === data.fallback} onChange={(e) => toggleLanguage(l.name, e.target.checked)} />
-              <span className="min-w-0">
-                <span className="block font-medium">{l.name} <span className="font-normal text-muted">{l.script !== l.name ? `· ${l.script}` : ""}</span></span>
-                <span className="block text-[12px] text-muted num">{l.borrowers} borrowers · voice {l.voice}</span>
-                {l.name === data.fallback && <span className="block text-[11.5px] text-muted">Always on, used as the fallback</span>}
-              </span>
-            </label>
-          ))}
-        </div>
-        {data.unserved > 0 && (
-          <p className="mt-3 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
-            {data.unserved} borrowers speak a language that isn&apos;t switched on. They are contacted in {data.fallback} until you enable it.
-          </p>
-        )}
-        {langMsg && <p className="mt-2 text-[12.5px] text-ink-2" role="status">{langMsg}</p>}
-      </Card>
-
-      <Card pad={false} title="Communication channels"
-        sub={`How borrowers are reached. Each line carries ${SESSIONS_PER_LINE} concurrent calls or conversations. Telecallers are people, counted by seat at one call each.`}>
-        <div className="overflow-x-auto">
-          <table className="table w-full">
-            <thead><tr><th>Channel</th><th className="text-right">Lines / seats</th><th className="text-right">Capacity</th><th>Live now</th><th className="text-right">Campaigns</th></tr></thead>
-            <tbody>
-              {data.channels.map((c) => {
-                const Icon = ICON[c.key];
-                return (
-                  <tr key={c.key}>
-                    <td className="min-w-[260px]">
-                      <div className="flex items-start gap-2.5">
-                        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sunk text-ink-2"><Icon size={14} aria-hidden="true" /></span>
-                        <span>
-                          <span className="block font-medium">{c.key}</span>
-                          <span className="block text-[12px] text-muted">{c.use}</span>
-                        </span>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap text-right">
-                      {canEdit && !offline
-                        ? <span className="inline-flex items-center gap-1.5">
-                            <input aria-label={`${c.key} ${c.unit}s`} className="input w-16 text-right" type="number" min={0} max={c.maxLines} defaultValue={c.lines} key={c.lines}
-                              onBlur={(e) => { const v = Number(e.target.value); if (Number.isInteger(v) && v !== c.lines) setLines(c, v); }} />
-                            <span className="text-[12px] text-muted">{c.unit}s</span>
-                          </span>
-                        : <span className="num">{c.lines} {c.unit}{c.lines === 1 ? "" : "s"}</span>}
-                    </td>
-                    <td className="whitespace-nowrap text-right num">{n(c.capacity)}<span className="text-[12px] text-muted"> concurrent</span></td>
-                    <td className="whitespace-nowrap"><Meter live={c.live} max={c.capacity} wide /></td>
-                    <td className="text-right num">{c.campaigns || "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        {lineMsg && <p className="px-4 pb-3 text-[12.5px] text-ink-2" role="status">{lineMsg}</p>}
-      </Card>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="seg" role="group" aria-label="Product">
-          <button aria-pressed={product === "all"} onClick={() => setProduct("all")}>All products</button>
-          {meta.products.map((p) => <button key={p} aria-pressed={product === p} onClick={() => setProduct(p)}>{p}</button>)}
-        </div>
-        <select aria-label="Language" className="input" value={lang} onChange={(e) => setLang(e.target.value)}>
-          <option value="all">All languages</option>
-          {data.languages.filter((l) => l.enabled).map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
-        </select>
+      <p className="text-[13px] text-muted">Every campaign run in the selected dates: one row per campaign code per day, with when it ran, how many calls ran at once and what it achieved. Use the date and product filters above.</p>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi label="Campaign runs" value={num(rows.length)} sub={`${new Set(rows.map((r) => r.code)).size} campaign codes`} />
+        <Kpi label="Calls made" value={num(calls)} sub={`${num(rows.reduce((n, r) => n + r.talkMinutes, 0))} talk minutes`} />
+        <Kpi label="Connected" value={pct(connected, calls)} sub={`${num(connected)} calls answered`} />
+        <Kpi label="Peak concurrency" value={num(Math.max(0, ...rows.map((r) => r.peak)))} sub="Most calls live at once in one run" />
       </div>
-      <Card pad={false} title="Campaigns" sub="Each campaign's share of its channel's capacity."
-        right={canEdit && !offline ? <button className="btn" onClick={() => patch({ recalculate: true }).then((r) => setLineMsg(r.ok ? "Capacity shared evenly within each channel." : r.json.error ?? "Couldn't rebalance."))}><RefreshCw size={14} aria-hidden="true" />Share capacity evenly</button> : undefined}>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {byProduct.map((p) => (
+          <button key={p.product} onClick={() => setProduct(product === p.product ? "all" : p.product)} aria-pressed={product === p.product}
+            className={`card p-3 text-left ${product === p.product ? "border-brand bg-brand-soft" : "hover:border-line-strong"}`}>
+            <div className="text-[13.5px] font-semibold">{p.product}</div>
+            <div className="mt-1 text-[12px] text-muted num">{num(p.runs)} runs · {num(p.calls)} calls · {pct(p.connected, p.calls)} connected</div>
+            <div className="text-[12px] text-muted num">{num(p.promises)} promises · peak {num(p.peak)} at once</div>
+          </button>
+        ))}
+      </div>
+
+      {sel && (
+        <Card title={<span className="font-mono text-[14px]">{sel.code}</span>} sub={`${sel.product} · ${sel.portfolio} · ${shortDay(sel.day)}, ${time(sel.start)}–${time(sel.end)} IST · ${CHANNEL_LABEL[sel.channel] ?? sel.channel} · ${sel.language}`}
+          right={<button className="btn btn-ghost min-h-8 px-2" onClick={() => setOpen(null)} aria-label="Close run"><X size={15} /></button>}>
+          <div className="grid gap-4 lg:grid-cols-[1fr_1fr_260px]">
+            <div>
+              <div className="label mb-1">Calls started by hour</div>
+              <ResponsiveContainer width="100%" height={170}>
+                <BarChart data={sel.hours.map((v, i) => ({ hour: `${String(8 + i).padStart(2, "0")}:00`, calls: v }))} margin={{ left: -20 }}>
+                  <CartesianGrid stroke={C.grid} vertical={false} />
+                  <XAxis dataKey="hour" {...axisProps} interval={1} />
+                  <YAxis {...axisProps} allowDecimals={false} />
+                  <Tooltip {...tooltipStyle} cursor={{ fill: "#f1eee8" }} />
+                  <Bar dataKey="calls" fill={C.brand} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div>
+              <div className="label mb-2">Outcomes</div>
+              <ul className="space-y-1.5">
+                {Object.entries(sel.outcomes).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+                  <li key={k}>
+                    <div className="flex justify-between text-[12.5px]"><span>{k}</span><span className="num text-muted">{num(v)} · {pct(v, sel.calls)}</span></div>
+                    <div className="mt-0.5 h-1.5 rounded-full bg-sunk"><div className="h-1.5 rounded-full" style={{ width: pct(v, sel.calls), background: DISP_COLOR[k] ?? C.grey }} /></div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <dl className="divide-y divide-line text-[12.5px]">
+              {[["Calls made", num(sel.calls)], ["Connected", `${num(sel.connected)} (${pct(sel.connected, sel.calls)})`], ["Promises", num(sel.promises)], ["Payments", num(sel.paid)],
+                ["Peak concurrency", `${num(sel.peak)} of ${num(sel.concurrency)} set`], ["Talk time", `${num(sel.talkMinutes)} min`]].map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-2 py-1.5"><dt className="text-muted">{k}</dt><dd className="font-medium num">{v}</dd></div>
+              ))}
+            </dl>
+          </div>
+        </Card>
+      )}
+
+      <Card pad={false} title="Runs" sub="Click a run to see its hours and outcomes."
+        right={<div className="flex flex-wrap gap-2">
+          <label className="sr-only" htmlFor="rq">Search campaign code</label>
+          <input id="rq" className="input w-56" placeholder="Search campaign code" value={q} onChange={(e) => setQ(e.target.value)} />
+          <button className="btn" onClick={exportCsv}><Download size={14} aria-hidden="true" />Export CSV</button>
+        </div>}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
-            <thead><tr><th>Agent</th><th>Campaign code</th><th>Language</th><th>Voice</th><th>Live / max</th>{canEdit && <th>Max</th>}<th>Feedback</th></tr></thead>
-            {groups.map(([prod, agents]) => (
-              <tbody key={prod}>
-                <tr><td colSpan={canEdit ? 7 : 6} className="bg-sunk/60 py-1.5 text-[11.5px] font-semibold uppercase tracking-[0.05em] text-muted">{prod === "All" ? "Shared" : prod}</td></tr>
-                {agents.map((a) => (
-                  <tr key={a.id}>
-                    <td className="font-medium">{a.name}</td>
-                    <td className="font-mono text-[12px] text-ink-2">{a.code}</td><td>{a.language}</td><td>{a.voice}</td>
-                    <td><Meter live={a.live} max={a.max} /></td>
-                    {canEdit && <td><input aria-label={`Max for ${a.name}`} className="input w-20" type="number" min={0} defaultValue={a.max} key={a.max} disabled={offline}
-                      onBlur={(e) => { const v = Number(e.target.value); if (v !== a.max && v >= 0) patch({ agentId: a.id, max: v }); }} /></td>}
-                    <td className="text-[12px]">
-                      <span className="inline-flex gap-1">
-                        <span className="rounded bg-good-soft px-1.5 py-0.5 text-good num">{a.resolved} resolved</span>
-                        {a.open > 0 && <span className="rounded bg-warn-soft px-1.5 py-0.5 text-warn num">{a.open} open</span>}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            ))}
+            <thead><tr><th>Product</th><th>Date</th><th>Time (IST)</th><th>Campaign code</th><th>Channel</th><th className="text-right">Concurrency</th><th className="text-right">Calls made</th><th className="text-right">Connected</th><th className="text-right">Promises</th><th className="text-right">Payments</th></tr></thead>
+            <tbody>
+              {rows.slice(page * PAGE, page * PAGE + PAGE).map((r) => (
+                <tr key={r.id} className={`cursor-pointer hover:bg-sunk/40 ${open === r.id ? "bg-brand-soft/50" : ""}`} onClick={() => setOpen(r.id)}>
+                  <td className="font-medium">{r.product}</td>
+                  <td className="num">{shortDay(r.day)}</td>
+                  <td className="num text-[12.5px]">{time(r.start)}–{time(r.end)}</td>
+                  <td className="font-mono text-[12px] text-ink-2">{r.code}</td>
+                  <td className="text-[12.5px]">{CHANNEL_LABEL[r.channel] ?? r.channel}</td>
+                  <td className="text-right num">{num(r.peak)}<span className="text-muted"> / {num(r.concurrency)}</span></td>
+                  <td className="text-right num">{num(r.calls)}</td>
+                  <td className="text-right num">{num(r.connected)} <span className="text-[11.5px] text-muted">{pct(r.connected, r.calls)}</span></td>
+                  <td className="text-right num">{num(r.promises)}</td>
+                  <td className="text-right num">{num(r.paid)}</td>
+                </tr>
+              ))}
+            </tbody>
           </table>
+          {!rows.length && <Empty title="No runs in these dates">Widen the date range or pick another product.</Empty>}
         </div>
+        <Pager page={page} pages={pages} setPage={setPage} total={rows.length} />
       </Card>
+      {data.total > data.runs.length && <p className="text-[12px] text-muted">Showing the latest {num(data.runs.length)} of {num(data.total)} runs. Narrow the dates to see older ones.</p>}
     </>
   );
 }

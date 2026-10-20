@@ -23,7 +23,8 @@ const FIELD_FORMAT: Partial<Record<WaFieldKey, ValueFormat>> = { emi: "amount", 
 const PAGE = 25;
 const memoKey = (t: WaTemplate) => `kollect.wa.cols.${t.name}.${t.language}`;
 
-export default function WaComposer({ data, canCampaign, onDone }: { data: ComposerData; canCampaign: boolean; onDone: (view: unknown) => void }) {
+/** `single`: telecallers send to one person at a time; lists and campaigns are for supervisors. */
+export default function WaComposer({ data, canCampaign, single = false, onDone }: { data: ComposerData; canCampaign: boolean; single?: boolean; onDone: (view: unknown) => void }) {
   const [source, setSource] = useState<Source>("numbers");
   const [picked, setPicked] = useState<string[]>([]);
   const [newPhone, setNewPhone] = useState("");
@@ -58,7 +59,7 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
     if (!x.ok) { setMsg({ ok: false, text: x.json.error ?? "That doesn't look like a phone number." }); return; }
     onDone(x.json);
     const saved = (x.json.recipients as { phone: string }[]).find((r) => r.phone.slice(-10) === digits.slice(-10));
-    if (saved) setPicked((p) => [...new Set([...p, saved.phone])]);
+    if (saved) setPicked((p) => (single ? [saved.phone] : [...new Set([...p, saved.phone])]));
     setNewPhone(""); setNewName(""); setMsg(null);
   }
 
@@ -152,6 +153,12 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
   }
 
   const loadable = source === "campaign" ? !!campaignId : source === "list" ? !!table && table.phoneCol >= 0 && table.rows.length > 0 : phones.length > 0;
+  // The recipient list loads by itself a moment after it changes, so there is no separate step before Send.
+  useEffect(() => {
+    if (!loadable || !data.configured) return;
+    const id = setTimeout(() => { load(); }, 350);
+    return () => clearTimeout(id);
+  }, [loadable, data.configured, source, phones.join("|"), campaignId, pasted]); // eslint-disable-line react-hooks/exhaustive-deps
   const setCol = (i: number, patch: Partial<Col>) => setCols(cols.map((c, j) => (j === i ? { ...c, ...patch } : c)));
 
   return (
@@ -162,7 +169,7 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
           <div className="label mb-1.5">1 · Who gets it</div>
           <div className="seg" role="group" aria-label="Send to">
             <button type="button" aria-pressed={source === "numbers"} onClick={() => setSource("numbers")}>Numbers</button>
-            <button type="button" aria-pressed={source === "list"} onClick={() => setSource("list")}>Paste a list</button>
+            {!single && <button type="button" aria-pressed={source === "list"} onClick={() => setSource("list")}>Paste a list</button>}
             {canCampaign && <button type="button" aria-pressed={source === "campaign"} onClick={() => setSource("campaign")}>A campaign</button>}
           </div>
           <div className="mt-2">
@@ -174,12 +181,12 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
                       const on = picked.includes(r.phone);
                       return (
                         <span key={r.phone} className={`inline-flex items-center rounded-full border text-[12px] ${on ? "border-brand bg-brand-soft font-medium text-brand" : "border-line text-ink-2"}`}>
-                          <button type="button" aria-pressed={on} className="py-1 pl-2.5 pr-1" onClick={() => setPicked(on ? picked.filter((x) => x !== r.phone) : [...picked, r.phone])} title={`+${r.phone}`}>{r.name || `+${r.phone}`}</button>
+                          <button type="button" aria-pressed={on} className="py-1 pl-2.5 pr-1" onClick={() => setPicked(on ? picked.filter((x) => x !== r.phone) : single ? [r.phone] : [...picked, r.phone])} title={`+${r.phone}`}>{r.name || `+${r.phone}`}</button>
                           <button type="button" className="px-1.5 py-1 text-muted hover:text-bad" aria-label={`Remove ${r.name ?? r.phone} from saved numbers`} onClick={async () => { const x = await post("/api/whatsapp", { action: "removeRecipient", phone: r.phone }); if (x.ok) { onDone(x.json); setPicked(picked.filter((p) => p !== r.phone)); } }}>×</button>
                         </span>
                       );
                     })}
-                    {data.recipients.length > 1 && <button type="button" className="text-[12px] text-brand hover:underline" onClick={() => setPicked(picked.length === data.recipients.length ? [] : data.recipients.map((r) => r.phone))}>{picked.length === data.recipients.length ? "Clear" : "Select all"}</button>}
+                    {data.recipients.length > 1 && !single && <button type="button" className="text-[12px] text-brand hover:underline" onClick={() => setPicked(picked.length === data.recipients.length ? [] : data.recipients.map((r) => r.phone))}>{picked.length === data.recipients.length ? "Clear" : "Select all"}</button>}
                   </div>
                 )}
                 <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
@@ -211,8 +218,8 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
               </select>
             )}
           </div>
-          <button className="btn mt-2" disabled={!loadable || busy === "load" || !data.configured} onClick={load}><Users size={14} aria-hidden="true" />{busy === "load" ? "Loading…" : prep ? "Reload recipients" : "Load recipients"}</button>
-          {prep && <span className="ml-2 text-[12.5px] text-muted">{prep.rows.length} recipient{prep.rows.length === 1 ? "" : "s"} loaded.</span>}
+          <p className="mt-2 flex items-center gap-1.5 text-[12.5px] text-muted"><Users size={13} aria-hidden="true" />
+            {busy === "load" ? "Loading…" : prep ? `${prep.rows.length} recipient${prep.rows.length === 1 ? "" : "s"} ready. Pick a template below.` : "Add a number, paste a list or pick a campaign."}</p>
         </div>
 
         {/* 2. Template */}

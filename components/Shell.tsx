@@ -3,8 +3,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, Megaphone, PanelLeftClose, PanelLeftOpen, PieChart, PhoneForwarded, LibraryBig, Headset, MessageCircle } from "lucide-react";
-import { ACCESS, MODULES, ROLE_LABEL, can, type ModuleGroup, type ModuleKey } from "@/lib/roles";
+  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, Megaphone, PanelLeftClose, PanelLeftOpen, PieChart, PhoneForwarded, LibraryBig, Headset, MessageCircle, Server } from "lucide-react";
+import { ACCESS, MODULES, ROLE_LABEL, can, inNav, type ModuleGroup, type ModuleKey } from "@/lib/roles";
 import type { Filters } from "@/lib/types";
 import type { SessionUser } from "@/lib/auth";
 import { AppCtx, type Meta } from "./ctx";
@@ -14,9 +14,9 @@ import BorrowerDrawer from "./BorrowerDrawer";
 
 const ICONS: Record<ModuleKey, typeof LayoutDashboard> = {
   portfolio: PieChart, home: LayoutDashboard, performance: BarChart3, campaigns: Megaphone, borrowers: Users, handoffs: PhoneForwarded, followups: CalendarDays, calldesk: Headset, whatsapp: MessageCircle,
-  channels: Radio, audit: ShieldCheck, compliance: Scale, grievances: MessageSquareWarning, usage: Gauge, prompts: LibraryBig, data: Database,
+  channels: Radio, audit: ShieldCheck, compliance: Scale, grievances: MessageSquareWarning, usage: Gauge, prompts: LibraryBig, data: Database, capacity: Server,
 };
-const GROUPS: ModuleGroup[] = ["Plan", "Monitor", "Act", "Assure", "Studio", "Setup"];
+const GROUPS: ModuleGroup[] = ["Plan", "Monitor", "Act", "Assure", "Agent Studio", "Setup"];
 const RANGE_LABEL: Record<Filters["range"], string> = { today: "Today", "7d": "Last 7 days", "30d": "Last 30 days", mtd: "Month to date", custom: "Custom range" };
 const DEFAULT_FILTERS: Filters = { range: "30d", portfolio: "all", product: "all", channel: "all" };
 
@@ -84,7 +84,7 @@ export default function Shell({ user, children }: { user: SessionUser; children:
           </div>
           <nav className={`no-scrollbar flex-1 overflow-y-auto pb-3 ${collapsed ? "px-3 lg:px-2" : "px-3"}`} aria-label="Main">
             {GROUPS.map((g) => {
-              const items = MODULES.filter((m) => m.group === g && allowed.includes(m.key));
+              const items = MODULES.filter((m) => m.group === g && inNav(user.role, m.key));
               if (!items.length) return null;
               return (
                 <div key={g} className="mt-3">
