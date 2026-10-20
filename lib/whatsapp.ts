@@ -5,6 +5,20 @@ import type { Store, WaMessage, WaState, WaTemplate } from "./types";
 
 export type WaMode = "test" | "live";
 
+/** The sending number picked on the WhatsApp page, read from the in-memory store so every caller of waConfig() sees it. */
+const selectedNumber = () => (globalThis as unknown as { __kollect?: Store }).__kollect?.wa?.phoneNumberId ?? "";
+
+/** Opaque id for a conversation, so the browser can reply without ever holding the full phone number. */
+export const chatId = (phone: string) => `c_${crypto.createHash("sha256").update(phone).digest("hex").slice(0, 16)}`;
+
+export interface WaNumber { id: string; display_phone_number: string; verified_name?: string; quality_rating?: string; status?: string; code_verification_status?: string }
+
+/** Every phone number on the WhatsApp Business account, so the sending number can be switched. */
+export async function fetchPhoneNumbers(): Promise<{ ok: true; numbers: WaNumber[] } | { ok: false; error: GraphError }> {
+  const r = await graph(`${waConfig().wabaId}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,status,code_verification_status`);
+  return r.ok ? { ok: true, numbers: r.json.data ?? [] } : { ok: false, error: graphError(r.json) };
+}
+
 export function waConfig() {
   const env = process.env;
   const cfg = {
@@ -13,8 +27,10 @@ export function waConfig() {
     verifyToken: env.WHATSAPP_VERIFY_TOKEN ?? "",
     appId: env.WHATSAPP_APP_ID ?? "",
     wabaId: env.WHATSAPP_WABA_ID ?? "",
-    phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID ?? "",
-    version: env.WHATSAPP_GRAPH_VERSION || "v25.0",
+    // A Super Admin can switch the sending number on the WhatsApp page; that choice wins over the env default.
+    phoneNumberId: selectedNumber() || (env.WHATSAPP_PHONE_NUMBER_ID ?? ""),
+    defaultPhoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID ?? "",
+    version: env.WHATSAPP_GRAPH_VERSION || "v26.0",
     mode: (env.WHATSAPP_MODE === "live" ? "live" : "test") as WaMode,
     testNumbers: (env.WHATSAPP_TEST_NUMBERS ?? "").split(",").map((n) => normalizePhone(n)).filter(Boolean) as string[],
   };
@@ -51,7 +67,7 @@ export function syncWaConnector(s: Store) {
   c.config = { number: h?.number?.display_phone_number ?? "", phoneNumberId: cfg.phoneNumberId, wabaId: cfg.wabaId };
   c.status = !h ? "Not connected" : h.ok ? "Connected" : "Error";
   c.lastTest = h?.checkedAt;
-  c.lastResult = !h ? "Run a connection check on the WhatsApp tab." : h.ok ? `${h.number?.verified_name ?? "Number"} · ${h.number?.status ?? ""}` : `${h.error?.code ?? ""} ${h.error?.title ?? "Check failed"}`.trim();
+  c.lastResult = !h ? "Run a connection check on the WhatsApp page." : h.ok ? `${h.number?.verified_name ?? "Number"} · ${h.number?.status ?? ""}` : `${h.error?.code ?? ""} ${h.error?.title ?? "Check failed"}`.trim();
 }
 
 export function addWaMessage(s: Store, m: WaMessage) {
@@ -108,6 +124,27 @@ export async function fetchTemplates(): Promise<{ ok: true; templates: WaTemplat
     };
   });
   return { ok: true, templates };
+}
+
+export interface NewTemplate {
+  name: string; language: string; category: "UTILITY" | "MARKETING";
+  header?: string; headerExample?: string; body: string; bodyExamples: string[]; footer?: string;
+  quickReplies: string[]; url?: { text: string; url: string };
+}
+
+/** Submits a template for Meta's review. Variables are positional ({{1}}, {{2}}…) and each needs a sample value. */
+export async function createTemplate(t: NewTemplate): Promise<{ ok: true; id: string; status: string } | { ok: false; error: GraphError }> {
+  const components: object[] = [];
+  if (t.header) components.push({ type: "HEADER", format: "TEXT", text: t.header, ...(t.headerExample ? { example: { header_text: [t.headerExample] } } : {}) });
+  components.push({ type: "BODY", text: t.body, ...(t.bodyExamples.length ? { example: { body_text: [t.bodyExamples] } } : {}) });
+  if (t.footer) components.push({ type: "FOOTER", text: t.footer });
+  const buttons = [...t.quickReplies.map((text) => ({ type: "QUICK_REPLY", text })), ...(t.url ? [{ type: "URL", text: t.url.text, url: t.url.url }] : [])];
+  if (buttons.length) components.push({ type: "BUTTONS", buttons });
+  const r = await graph(`${waConfig().wabaId}/message_templates`, {
+    method: "POST",
+    body: JSON.stringify({ name: t.name, language: t.language, category: t.category, components }),
+  });
+  return r.ok && r.json?.id ? { ok: true, id: r.json.id, status: r.json.status ?? "PENDING" } : { ok: false, error: graphError(r.json) };
 }
 
 /** Fills a template's text with the values that will be sent, for previews and the message log. */

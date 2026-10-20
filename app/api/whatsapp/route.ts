@@ -6,14 +6,39 @@ import { audit, saveStore } from "@/lib/store";
 import type { Borrower, Campaign, Store, WaMessage, WaTemplate } from "@/lib/types";
 import { WA_FIELDS, fieldValue, mapValue, type WaMapping } from "@/lib/waFields";
 import {
-  addWaMessage, fetchHealth, fetchTemplates, maskPhone, normalizePhone, renderTemplate, sendTemplate, sendText,
-  syncWaConnector, waConfig, waState, windowOpenFor,
+  addWaMessage, borrowerByPhone, chatId, createTemplate, fetchHealth, fetchPhoneNumbers, fetchTemplates, maskPhone, normalizePhone, renderTemplate, sendTemplate, sendText,
+  placeholders, syncWaConnector, waConfig, waState, windowOpenFor,
 } from "@/lib/whatsapp";
+
+/** One row per person messaged: latest message, delivery state of our last send, their replies, and the thread. */
+function chats(s: Store) {
+  const st = waState(s);
+  const byPhone = new Map<string, WaMessage[]>();
+  for (const m of st.messages) { const list = byPhone.get(m.to) ?? []; list.push(m); byPhone.set(m.to, list); } // newest first
+  const saved = new Map((st.recipients ?? []).map((r) => [r.phone, r.name]));
+  return [...byPhone.entries()].map(([phone, ms]) => {
+    const id = chatId(phone);
+    const linked = ms.find((m) => m.borrowerId);
+    const b = linked ? s.borrowers.find((x) => x.id === linked.borrowerId) : borrowerByPhone(s, phone);
+    const readAt = st.chatsReadAt?.[id];
+    const lastIn = st.contacts[phone]?.lastInboundAt;
+    return {
+      id, phone: maskPhone(phone), name: saved.get(phone) || st.contacts[phone]?.name || b?.name || maskPhone(phone), loanId: b?.loanId,
+      lastAt: ms[0].ts, lastText: ms[0].text, lastDirection: ms[0].direction, lastOutStatus: ms.find((m) => m.direction === "out")?.status,
+      replies: ms.filter((m) => m.direction === "in").length, unread: ms.filter((m) => m.direction === "in" && (!readAt || m.ts > readAt)).length,
+      windowOpen: windowOpenFor(s, phone), windowUntil: lastIn ? new Date(Date.parse(lastIn) + 86_400_000).toISOString() : undefined,
+      messages: ms.slice(0, 80).reverse().map((m) => ({ id: m.id, ts: m.ts, direction: m.direction, text: m.text, status: m.status, template: m.template, error: m.error, by: m.by })),
+    };
+  }).sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, 80);
+}
+const phoneForChat = (s: Store, id: string) => waState(s).messages.map((m) => m.to).find((p) => chatId(p) === id);
 import { canContact } from "@/lib/contact";
 
 const now = () => new Date().toISOString();
 const MAX_LIVE_BATCH = 250; // Meta's current daily limit for new conversations on this number
 const MAX_TEST_BATCH = 5;   // test mode sends every campaign message to the test numbers; keep it small
+const MAX_DIRECT_BATCH = 50; // typed or saved numbers in one "Send message"
+const LANGUAGES = ["en_US", "en", "en_GB", "hi", "mr", "gu", "ta", "te", "kn", "bn", "ml", "pa"];
 
 /** Things still blocking or worth doing, from the setup decisions plus what the live checks show. */
 function todos(s: Store) {
@@ -21,8 +46,6 @@ function todos(s: Store) {
   const own = st.templates.filter((t) => t.name !== "3p_direct_integration_test_template");
   const list: { title: string; detail: string; state: "blocker" | "todo" | "parked" | "done"; due?: string }[] = [];
   if (cfg.missing.length) list.push({ state: "blocker", title: "Add the WhatsApp env vars to this server", detail: `Missing: ${cfg.missing.join(", ")}.` });
-  list.push({ state: "blocker", title: "Add a payment method to the \"Vian Shah\" WhatsApp account", due: "21 Oct 2026",
-    detail: "Templates from +91 98676 76954 are accepted by Meta but not delivered. The ₹40 balance sits on the Predixion.AI account, which doesn't pay for this number. WhatsApp Manager → switch to Vian Shah → Payment settings → Add payment method." });
   if (!own.some((t) => t.status === "APPROVED"))
     list.push({ state: "todo", title: "Wait for our own templates to be approved", detail: own.length ? own.map((t) => `${t.name} (${t.language}): ${t.status}${t.rejectedReason ? ` · ${t.rejectedReason}` : ""}`).join("; ") : "Sync templates to see their review status." });
   if (n && n.code_verification_status && n.code_verification_status !== "VERIFIED")
@@ -48,12 +71,14 @@ function view(s: Store, user: SessionUser) {
     messages: st.messages.slice(0, 200).map((m) => ({ ...m, to: maskPhone(m.to), redirectedFrom: m.redirectedFrom ? maskPhone(m.redirectedFrom) : undefined })),
     openWindows: Object.entries(st.contacts).filter(([p]) => windowOpenFor(s, p)).map(([p, c]) => ({ to: maskPhone(p), until: new Date(Date.parse(c.lastInboundAt) + 86_400_000).toISOString() })),
     campaigns: s.campaigns.map((c) => ({ id: c.id, name: c.name, status: c.status, members: c.members.length || audienceOf(s, c.audience).filter((b) => b.disposition !== "Dispute").length })),
+    recipients: st.recipients ?? [], languages: LANGUAGES,
+    chats: chats(s), numbers: st.numbers ?? [], defaultPhoneNumberId: cfg.defaultPhoneNumberId,
     fields: WA_FIELDS, todos: todos(s), canSend: true, user: user.username,
   };
 }
 
 export async function GET() {
-  const a = await requireUser(undefined, "campaigns");
+  const a = await requireUser(undefined, "whatsapp");
   if ("res" in a) return a.res;
   return NextResponse.json(view(a.store, a.user));
 }
@@ -107,14 +132,74 @@ function templateFrom(s: Store, name: unknown, language: unknown) {
 export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const action = String(body.action ?? "");
-  const gate = action === "campaignSend" || action === "campaignPreview" ? "manageCampaigns" : action === "send" || action === "borrower" ? "sendLink" : undefined;
-  const a = await requireUser(gate, "campaigns");
+  const gate = ["campaignSend", "campaignPreview", "createTemplate"].includes(action) ? "manageCampaigns"
+    : ["listNumbers", "setNumber"].includes(action) ? "manageConnectors"
+    : ["send", "borrower", "saveRecipient", "removeRecipient", "reply"].includes(action) ? "sendLink" : undefined;
+  const a = await requireUser(gate, "whatsapp");
   if ("res" in a) return a.res;
   const { store: s, user } = a;
   const cfg = waConfig();
   const st = waState(s);
 
+  if (action === "markRead") {
+    const id = String(body.chatId ?? "");
+    if (!phoneForChat(s, id)) return bad("Chat not found", 404);
+    (st.chatsReadAt ??= {})[id] = now();
+    saveStore(s, { throttle: true });
+    return NextResponse.json(view(s, user));
+  }
+
   if (action !== "borrower" && cfg.missing.length) return bad(`WhatsApp isn't configured on this server. Missing: ${cfg.missing.join(", ")}.`, 503);
+
+  if (action === "listNumbers") {
+    const r = await fetchPhoneNumbers();
+    if (!r.ok) return bad(`Meta: ${r.error.title}`, 502);
+    st.numbers = r.numbers;
+    saveStore(s);
+    return NextResponse.json(view(s, user));
+  }
+
+  if (action === "setNumber") {
+    const pick = (st.numbers ?? []).find((n) => n.id === body.phoneNumberId);
+    if (!pick) return bad("Load the account's numbers first, then pick one of them.");
+    const before = cfg.phoneNumberId;
+    st.phoneNumberId = pick.id === cfg.defaultPhoneNumberId ? undefined : pick.id;
+    const h = await fetchHealth();
+    st.health = { checkedAt: now(), ok: h.ok, ...(h.ok ? { number: h.number } : { error: h.error }) };
+    syncWaConnector(s);
+    audit(s, user, "wa_sending_number", "WhatsApp", `${before} → ${pick.id} (${pick.display_phone_number})`);
+    saveStore(s);
+    return NextResponse.json(view(s, user));
+  }
+
+  // Reply from the chat panel: free text inside the 24-hour window, otherwise an approved template.
+  if (action === "reply") {
+    const id = String(body.chatId ?? "");
+    const phone = phoneForChat(s, id);
+    if (!phone) return bad("Chat not found", 404);
+    const history = st.messages.find((m) => m.to === phone && m.borrowerId);
+    const borrower = history ? s.borrowers.find((x) => x.id === history.borrowerId) : undefined;
+    if (borrower && !borrower.waConsent) return bad("This borrower has opted out of WhatsApp.", 409);
+    let spec: SendSpec;
+    if (body.mode === "template") {
+      const t = templateFrom(s, body.template, body.language);
+      if (!t || t.status !== "APPROVED") return bad("Pick an approved template.");
+      const vals = (k: unknown) => (Array.isArray(k) ? k.map((v) => String(v ?? "").trim()) : []);
+      const bv = vals(body.params), hv = vals(body.headerParams);
+      if (bv.length < t.bodyParams.length || bv.some((v) => !v) || hv.length < t.headerParams.length || hv.some((v) => !v)) return bad("Fill in every template variable.");
+      spec = { mode: "template", template: t, body: bv, header: hv };
+    } else {
+      const text = String(body.text ?? "").trim().slice(0, 4096);
+      if (!text) return bad("Write a reply first.");
+      if (!windowOpenFor(s, phone)) return bad("It's been more than 24 hours since they last messaged, so WhatsApp only allows an approved template. Switch to Template.", 409);
+      spec = { mode: "text", text };
+    }
+    const msg = await deliver(s, user, phone, spec, { borrower: cfg.mode === "live" ? borrower : undefined });
+    (st.chatsReadAt ??= {})[id] = now();
+    audit(s, user, msg.status === "failed" ? "wa_send_failed" : "wa_reply", borrower?.loanId ?? maskPhone(phone), spec.mode === "template" ? spec.template.name : "text");
+    saveStore(s);
+    return NextResponse.json({ message: { ...msg, to: maskPhone(msg.to) }, ...view(s, user) }, { status: msg.status === "failed" ? 502 : 200 });
+  }
 
   if (action === "health") {
     const h = await fetchHealth();
@@ -131,6 +216,67 @@ export async function POST(req: Request) {
     audit(s, user, "wa_sync_templates", "WhatsApp", `${r.templates.length} templates`);
     saveStore(s);
     return NextResponse.json(view(s, user));
+  }
+
+  if (action === "saveRecipient") {
+    const phone = normalizePhone(body.phone);
+    if (!phone) return bad("Enter a valid phone number, with the country code for non-Indian numbers.");
+    const list = (st.recipients ??= []);
+    const name = String(body.name ?? "").trim().slice(0, 60) || undefined;
+    const existing = list.find((r) => r.phone === phone);
+    if (existing) existing.name = name ?? existing.name;
+    else list.push({ phone, name, addedAt: now(), by: user.username });
+    audit(s, user, "wa_save_number", maskPhone(phone), name ?? "");
+    saveStore(s);
+    return NextResponse.json(view(s, user));
+  }
+
+  if (action === "removeRecipient") {
+    const phone = normalizePhone(body.phone);
+    st.recipients = (st.recipients ?? []).filter((r) => r.phone !== phone);
+    audit(s, user, "wa_remove_number", maskPhone(phone), "");
+    saveStore(s);
+    return NextResponse.json(view(s, user));
+  }
+
+  if (action === "createTemplate") {
+    const name = String(body.name ?? "").trim();
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) return bad("Name: lowercase letters, numbers and underscores only (e.g. emi_reminder_v2).");
+    const language = String(body.language ?? "");
+    if (!LANGUAGES.includes(language)) return bad("Pick a language.");
+    const category = body.category === "MARKETING" ? "MARKETING" : "UTILITY";
+    const text = (v: unknown) => String(v ?? "").trim();
+    const tBody = text(body.body), header = text(body.header), footer = text(body.footer);
+    if (!tBody) return bad("Write the message body.");
+    if (tBody.length > 1024) return bad("The body can be at most 1,024 characters.");
+    if (header.length > 60 || footer.length > 60) return bad("Header and footer can be at most 60 characters each.");
+    // Meta wants positional variables numbered 1, 2, 3… in order, not at the very start or end, with a sample for each.
+    const bodyVars = placeholders(tBody), headerVars = placeholders(header);
+    if ([...bodyVars, ...headerVars].some((v) => !/^\d+$/.test(v))) return bad("Use numbered variables like {{1}}, {{2}}.");
+    if (bodyVars.some((v, i) => Number(v) !== i + 1)) return bad("Number the body variables in order: {{1}}, then {{2}}, and so on.");
+    if (headerVars.length > 1 || (headerVars[0] && headerVars[0] !== "1")) return bad("The header can have one variable, {{1}}.");
+    if (/^\s*\{\{|\}\}\s*$/.test(tBody)) return bad("The body can't start or end with a variable; add some words around it.");
+    if (/\{\{|\}\}/.test(footer)) return bad("The footer can't contain variables.");
+    const bodyExamples: string[] = (Array.isArray(body.bodyExamples) ? body.bodyExamples : []).map(text).slice(0, bodyVars.length);
+    if (bodyExamples.length < bodyVars.length || bodyExamples.some((v) => !v)) return bad("Give a sample value for every body variable; Meta reviews with them.");
+    const headerExample = headerVars.length ? text(body.headerExample) : undefined;
+    if (headerVars.length && !headerExample) return bad("Give a sample value for the header variable.");
+    const quickReplies: string[] = (Array.isArray(body.quickReplies) ? body.quickReplies : []).map(text).filter(Boolean).slice(0, 3);
+    if (quickReplies.some((q) => q.length > 25)) return bad("Quick reply buttons can be at most 25 characters.");
+    let url: { text: string; url: string } | undefined;
+    if (text(body.urlText) || text(body.url)) {
+      url = { text: text(body.urlText), url: text(body.url) };
+      if (!url.text || url.text.length > 25) return bad("The link button needs a label of up to 25 characters.");
+      if (!/^https:\/\/\S+$/.test(url.url)) return bad("The link button needs a full https:// address.");
+    }
+    if (st.templates.some((t) => t.name === name && t.language === language)) return bad(`A template called ${name} (${language}) already exists.`);
+    const r = await createTemplate({ name, language, category, header: header || undefined, headerExample, body: tBody, bodyExamples, footer: footer || undefined, quickReplies, url });
+    if (!r.ok) return bad(`Meta: ${r.error.title}${r.error.detail ? ` (${r.error.detail})` : ""}`, 502);
+    audit(s, user, "wa_create_template", name, `${language} · ${category} · ${r.status}`);
+    const synced = await fetchTemplates();
+    if (synced.ok) { st.templates = synced.templates; st.templatesSyncedAt = now(); }
+    saveStore(s);
+    return NextResponse.json({ created: { id: r.id, status: r.status, name, language }, ...view(s, user) });
   }
 
   if (action === "borrower") {
@@ -160,8 +306,30 @@ export async function POST(req: Request) {
       if (bodyVals.some((v) => /[\n\t]| {5,}/.test(v))) return bad("Variables can't contain line breaks, tabs or more than four spaces in a row (Meta rejects them).");
       spec = { mode: "template", template: t, body: bodyVals, header: headerVals };
     }
+    if (!body.loanId) {
+      const raw: unknown[] = Array.isArray(body.to) ? body.to : String(body.to ?? "").split(/[\s,;]+/);
+      const list = [...new Set(raw.map((x) => normalizePhone(String(x))).filter(Boolean))];
+      if (!list.length) return bad("Enter a valid phone number, with the country code for non-Indian numbers.");
+      if (list.length > MAX_DIRECT_BATCH) return bad(`At most ${MAX_DIRECT_BATCH} numbers per send.`);
+      if (spec.mode === "text" && list.length === 1 && !windowOpenFor(s, list[0]))
+        return bad("Free text only reaches someone who has messaged our WhatsApp number in the last 24 hours. Send an approved template instead, or ask them to send \"Hi\" first.", 409);
+      const results: { to: string; ok: boolean; error?: string }[] = [];
+      let first: WaMessage | undefined;
+      for (let i = 0; i < list.length; i++) {
+        const to = list[i];
+        if (spec.mode === "text" && !windowOpenFor(s, to)) { results.push({ to: maskPhone(to), ok: false, error: "No open 24-hour window" }); continue; }
+        const msg = await deliver(s, user, to, spec, {});
+        first ??= msg;
+        audit(s, user, msg.status === "failed" ? "wa_send_failed" : "wa_send", maskPhone(to), `${spec.mode === "template" ? spec.template.name : "text"}${msg.error ? ` · ${msg.error.code ?? ""} ${msg.error.title}` : ""}`);
+        results.push({ to: maskPhone(to), ok: msg.status !== "failed", error: msg.error ? `${msg.error.code ?? ""} ${msg.error.title}`.trim() : undefined });
+        if (i < list.length - 1) await new Promise((r2) => setTimeout(r2, 250));
+      }
+      saveStore(s);
+      const failed = results.filter((r) => !r.ok).length;
+      return NextResponse.json({ results, message: first ? { ...first, to: maskPhone(first.to) } : undefined, ...view(s, user) }, { status: failed === results.length ? 502 : 200 });
+    }
     let to: string, borrower: Borrower | undefined, redirectedFrom: string | undefined;
-    if (body.loanId) {
+    {
       borrower = s.borrowers.find((x) => x.loanId.toUpperCase() === String(body.loanId).trim().toUpperCase());
       if (!borrower) return bad("No borrower with that loan ID.", 404);
       const blocked = allowed(s, borrower);
@@ -169,9 +337,6 @@ export async function POST(req: Request) {
       const r = recipientFor(s, borrower, 0);
       if ("error" in r) return bad(r.error, 409);
       ({ to, redirectedFrom } = r);
-    } else {
-      to = normalizePhone(body.to);
-      if (!to) return bad("Enter a valid phone number, with the country code for non-Indian numbers.");
     }
     if (spec.mode === "text" && !windowOpenFor(s, to))
       return bad("Free text only reaches someone who has messaged our WhatsApp number in the last 24 hours. Send an approved template instead, or ask them to send \"Hi\" first.", 409);

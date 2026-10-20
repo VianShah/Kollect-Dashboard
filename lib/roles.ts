@@ -2,7 +2,7 @@ import type { Role } from "./types";
 
 export type ModuleKey =
   | "home" | "portfolio" | "performance" | "channels" | "campaigns" | "borrowers" | "followups" | "handoffs"
-  | "calldesk" | "audit" | "compliance" | "grievances" | "usage" | "prompts" | "data";
+  | "calldesk" | "whatsapp" | "audit" | "compliance" | "grievances" | "usage" | "prompts" | "data";
 export type ModuleGroup = "Plan" | "Monitor" | "Act" | "Assure" | "Studio" | "Setup";
 
 export const MODULES: { key: ModuleKey; label: string; href: string; group: ModuleGroup; filters: boolean }[] = [
@@ -15,6 +15,7 @@ export const MODULES: { key: ModuleKey; label: string; href: string; group: Modu
   { key: "handoffs", label: "Escalations", href: "/handoffs", group: "Act", filters: false },
   { key: "followups", label: "Call-backs", href: "/followups", group: "Act", filters: true },
   { key: "calldesk", label: "Call desk", href: "/calldesk", group: "Act", filters: false },
+  { key: "whatsapp", label: "WhatsApp", href: "/whatsapp", group: "Act", filters: false },
   { key: "audit", label: "Conversations", href: "/audit", group: "Assure", filters: true },
   { key: "compliance", label: "Compliance", href: "/compliance", group: "Assure", filters: true },
   { key: "grievances", label: "Grievances", href: "/grievances", group: "Assure", filters: false },
@@ -27,8 +28,8 @@ export const MODULES: { key: ModuleKey; label: string; href: string; group: Modu
 export const ACCESS: Record<Role, ModuleKey[]> = {
   superadmin: MODULES.map((m) => m.key),
   manager: ["portfolio", "home", "performance", "channels", "campaigns", "compliance", "usage"],
-  supervisor: ["home", "performance", "channels", "campaigns", "borrowers", "handoffs", "followups", "calldesk", "audit", "compliance", "grievances", "usage"],
-  telecaller: ["calldesk", "home", "campaigns", "channels", "borrowers", "handoffs", "followups", "audit"],
+  supervisor: ["home", "performance", "channels", "campaigns", "borrowers", "handoffs", "followups", "calldesk", "whatsapp", "audit", "compliance", "grievances", "usage"],
+  telecaller: ["calldesk", "home", "campaigns", "channels", "borrowers", "handoffs", "followups", "whatsapp", "audit"],
   client: ["home", "performance", "compliance", "usage"],
 };
 

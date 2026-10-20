@@ -120,8 +120,16 @@ export interface WaState {
   messages: WaMessage[];
   /** Per WhatsApp number: when they last wrote to us (opens the 24-hour free-text window). */
   contacts: Record<string, { lastInboundAt: string; name?: string }>;
+  /** Numbers saved on the WhatsApp tab for direct sends (not borrowers). */
+  recipients?: { phone: string; name?: string; addedAt: string; by: string }[];
   lastWebhookAt?: string;
   health?: { checkedAt: string; ok: boolean; number?: Record<string, string>; error?: { code?: number; title: string; detail?: string } };
+  /** Sending number chosen on the WhatsApp page; overrides WHATSAPP_PHONE_NUMBER_ID. */
+  phoneNumberId?: string;
+  /** Numbers on the WhatsApp Business account, from the last "list numbers" call. */
+  numbers?: { id: string; display_phone_number: string; verified_name?: string; quality_rating?: string; status?: string; code_verification_status?: string }[];
+  /** When each chat was last opened on the page, so new replies show as unread. */
+  chatsReadAt?: Record<string, string>;
 }
 
 export type GrievanceStatus = "Open" | "In progress" | "Resolved";

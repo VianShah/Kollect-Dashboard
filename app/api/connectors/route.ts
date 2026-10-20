@@ -23,7 +23,7 @@ export async function PATCH(req: Request) {
 
   // WhatsApp runs on Meta's Cloud API with keys in env vars, so "test" is a real check and the keys can't be edited here.
   if (c.kind === "whatsapp" && !waConfig().missing.length) {
-    if (!body.test) return bad("WhatsApp keys are set in the server's environment variables. Use the WhatsApp tab to check the connection.", 409);
+    if (!body.test) return bad("WhatsApp keys are set in the server's environment variables. Use the WhatsApp page to check the connection.", 409);
     const h = await fetchHealth();
     waState(store).health = { checkedAt: new Date().toISOString(), ok: h.ok, ...(h.ok ? { number: h.number } : { error: h.error }) };
     syncWaConnector(store);
