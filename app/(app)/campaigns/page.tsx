@@ -1,25 +1,29 @@
 "use client";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Copy, Download, Pause, Play, Plus, Rocket, Save, Square, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Copy, Download, Pause, Play, Plus, RefreshCw, Rocket, Save, Send, Square, Trash2, Undo2, Upload } from "lucide-react";
 import { useApp } from "@/components/ctx";
 import { post, useApi } from "@/components/useApi";
 import { Badge, Card, Empty, ErrorNote, Kpi, Loading, Tabs } from "@/components/ui";
 import type { AgentOption } from "@/components/WorkflowCanvas";
-import { After, AgentStep, ChannelsByRisk, During, StageBar, stageFor, type Stage } from "@/components/CampaignStages";
-import { CHANNEL_INFO, CONNECTOR_DEFS, channelsInUse, stepDef, workflowFromChannels } from "@/lib/campaigns";
+import { After, During, StageBar, stageFor, type Stage } from "@/components/CampaignStages";
+import { CampaignTabs, type DetailTab } from "@/components/CampaignTabs";
+import {
+  ChannelsStep, CompanyStep, DataStep, FieldsStep, NextBar, ReviewStep, RiskStep, SegmentsStep, Stepper,
+  type CampaignView, type PlanData, type PlanStep,
+} from "@/components/CampaignPlan";
+import { CONNECTOR_DEFS, channelsInUse, stepDef } from "@/lib/campaigns";
+import { channelTitle, type CampaignPlan } from "@/lib/campaignPlan";
 import { can } from "@/lib/roles";
 import { d, inr, num } from "@/lib/format";
-import type { Campaign, CampaignAudience, Connector, StepEdge, StepNode } from "@/lib/types";
+import type { Connector, StepEdge, StepNode } from "@/lib/types";
 
 const WorkflowCanvas = dynamic(() => import("@/components/WorkflowCanvas"), { ssr: false, loading: () => <div className="card h-[520px] animate-pulse bg-sunk/60" /> });
 
-type CampaignView = Omit<Campaign, "members"> & { memberCount: number; audienceSize: number };
-interface PromptOption { id: string; client: string; product: string; tone: string; version: number }
-interface Data { campaigns: CampaignView[]; connectors: Connector[]; agents: AgentOption[]; prompts: PromptOption[]; companies: string[]; options: { products: string[]; portfolios: string[]; languages: string[] } }
-interface Check { errors: string[]; warnings: string[]; audience: { total: number; eligible: number; outstanding: number; excluded: { disputed: number; doNotCall: number; noWhatsApp: number }; unmatched: number; tiers?: Record<"High" | "Medium" | "Low", number> } }
+interface Data extends PlanData { campaigns: CampaignView[]; connectors: Connector[]; agents: (AgentOption & { resolved: number; max: number })[]; options: { products: string[]; portfolios: string[]; languages: string[] } }
+interface Check { errors: string[]; warnings: string[] }
+const EDITABLE = ["Draft", "Scheduled", "Paused"];
 
-const SEGMENTS = ["Pre Due", "Post Due (0–30)", "Post Due (30–90)", "Post Due (90+)"];
 const channelsOf = (c: { nodes: StepNode[] }) => [...new Set(c.nodes.filter((n) => !["start", "end", "wait", "branch"].includes(n.kind)).map((n) => stepDef(n.kind).title))];
 const download = (name: string, body: unknown) => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(body, null, 2)], { type: "application/json" }));
@@ -31,7 +35,7 @@ export default function CampaignsPage() {
   const { user } = useApp();
   const [tab, setTab] = useState<"Campaigns" | "Integrations">("Campaigns");
   const [openId, setOpenId] = useState<string | null>(null);
-  const { data, error, reload, setData } = useApi<Data>("/api/campaigns", () => ({ campaigns: [], connectors: [], agents: [], prompts: [], companies: [], options: { products: [], portfolios: [], languages: [] } }));
+  const { data, error, reload, setData } = useApi<Data>("/api/campaigns", () => ({ campaigns: [], connectors: [], agents: [], prompts: [], companies: [], templates: [], options: { products: [], portfolios: [], languages: [] } }));
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
   const open = data.campaigns.find((c) => c.id === openId);
@@ -39,13 +43,13 @@ export default function CampaignsPage() {
   return (
     <>
       <Tabs tabs={["Campaigns", "Integrations"] as const} value={tab} onChange={setTab} />
-      {tab === "Campaigns" ? <List data={data} canManage={can(user.role, "manageCampaigns")} onOpen={setOpenId} reload={reload} />
+      {tab === "Campaigns" ? <List data={data} canManage={can(user.role, "manageCampaigns")} canApprove={can(user.role, "approveCampaigns")} onOpen={setOpenId} reload={reload} />
         : <Integrations connectors={data.connectors} canEdit={can(user.role, "manageConnectors")} reload={reload} />}
     </>
   );
 }
 
-function List({ data, canManage, onOpen, reload }: { data: Data; canManage: boolean; onOpen: (id: string) => void; reload: () => void }) {
+function List({ data, canManage, canApprove, onOpen, reload }: { data: Data; canManage: boolean; canApprove: boolean; onOpen: (id: string) => void; reload: () => void }) {
   const [msg, setMsg] = useState("");
   const file = useRef<HTMLInputElement>(null);
   async function act(body: object, done: string) {
@@ -59,32 +63,40 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
     catch { setMsg("That file isn't a campaign export (JSON)."); }
   }
   const running = data.campaigns.filter((c) => c.status === "Running");
+  const waiting = data.campaigns.filter((c) => c.status === "Awaiting approval");
   return (
     <>
+      {canApprove && waiting.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[13px] text-warn">
+          <span className="font-medium">{waiting.length} campaign{waiting.length === 1 ? " is" : "s are"} waiting for your approval:</span>
+          {waiting.map((c) => <button key={c.id} className="underline" onClick={() => onOpen(c.id)}>{c.name}</button>)}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Kpi label="Running" value={num(running.length)} sub={`${num(running.reduce((s, c) => s + c.memberCount, 0))} borrowers in flight`} />
-        <Kpi label="Scheduled or draft" value={num(data.campaigns.filter((c) => c.status === "Scheduled" || c.status === "Draft").length)} sub="Waiting to start" />
+        <Kpi label="Waiting to start" value={num(data.campaigns.filter((c) => ["Scheduled", "Draft", "Awaiting approval"].includes(c.status)).length)} sub={`${waiting.length} awaiting approval`} />
         <Kpi label="Promises from campaigns" value={num(data.campaigns.reduce((s, c) => s + c.stats.promises, 0))} sub="Across all campaigns" />
         <Kpi label="Collected by campaigns" value={inr(data.campaigns.reduce((s, c) => s + c.stats.collected, 0))} tone="good" sub="Payments credited to a campaign" />
       </div>
-      <Card pad={false} title="Campaigns" sub="Build a workflow across WhatsApp, SMS, AI voice, IVR and telecallers, choose who it reaches, then launch."
+      <Card pad={false} title="Campaigns" sub="Pick the portfolio, load its allocation file, check risk and segments, choose channels per segment, then send it for approval."
         right={canManage ? (
           <div className="flex flex-wrap gap-2">
             <input ref={file} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ""; }} />
             <button className="btn" onClick={() => file.current?.click()}><Upload size={14} aria-hidden="true" />Import config</button>
-            <button className="btn" onClick={() => act({ create: { name: "New campaign", from: "blank" } }, "Empty draft created.").then((r) => r.ok && onOpen(r.json.campaign.id))}>Start empty</button>
-            <button className="btn btn-primary" onClick={() => act({ create: { name: "New campaign", from: "demo" } }, "Demo campaign created with every step filled in. Review it, then launch.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />New campaign</button>
+            <button className="btn" onClick={() => act({ create: { name: "Demo campaign", from: "demo" } }, "Demo campaign created with every step filled in.").then((r) => r.ok && onOpen(r.json.campaign.id))}>Demo campaign</button>
+            <button className="btn btn-primary" onClick={() => act({ create: { name: "New campaign", from: "blank" } }, "New draft created.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />New campaign</button>
           </div>) : undefined}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
-            <thead><tr><th>Campaign</th><th>Status</th><th>Channels</th><th className="text-right">Borrowers</th><th className="text-right">Reached</th><th className="text-right">Promises</th><th className="text-right">Collected / target</th><th>Runs</th><th /></tr></thead>
+            <thead><tr><th>Campaign</th><th>Company</th><th>Status</th><th>Channels</th><th className="text-right">Borrowers</th><th className="text-right">Reached</th><th className="text-right">Promises</th><th className="text-right">Collected / target</th><th>Runs</th><th /></tr></thead>
             <tbody>
               {data.campaigns.map((c) => (
                 <tr key={c.id} className="hover:bg-sunk/40">
                   <td><button className="text-left font-medium hover:text-brand hover:underline" onClick={() => onOpen(c.id)}>{c.name}</button><div className="max-w-[300px] truncate text-[12px] text-muted">{c.goal || "—"}</div></td>
+                  <td className="text-[12.5px]">{c.company}</td>
                   <td><Badge>{c.status}</Badge></td>
-                  <td className="text-[12.5px]">{channelsOf(c).join(", ") || "—"}</td>
-                  <td className="text-right num">{num(c.status === "Running" || c.status === "Paused" || c.status === "Completed" ? c.memberCount : c.audienceSize)}</td>
+                  <td className="text-[12.5px]">{channelsInUse(c).map(channelTitle).join(", ") || channelsOf(c).join(", ") || "—"}</td>
+                  <td className="text-right num">{num(["Running", "Paused", "Completed"].includes(c.status) ? c.memberCount : c.audienceSize)}</td>
                   <td className="text-right num">{num(c.stats.reached)}</td><td className="text-right num">{num(c.stats.promises)}</td><td className="text-right num">{inr(c.stats.collected)}<span className="text-muted"> / {inr(c.target)}</span>{c.target > 0 && c.stats.collected > 0 && <div className="text-[11.5px] text-muted">{Math.round((c.stats.collected / c.target) * 100)}%</div>}</td>
                   <td className="text-[12.5px] num">{d(c.startAt)} – {d(c.endAt)}</td>
                   <td className="text-right">
@@ -93,7 +105,7 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
                         {c.status === "Running" && <button className="btn min-h-8 px-2" title="Pause" onClick={() => act({ id: c.id, action: "pause" }, "Paused.")}><Pause size={13} aria-label="Pause" /></button>}
                         {c.status === "Paused" && <button className="btn min-h-8 px-2" title="Resume" onClick={() => act({ id: c.id, action: "resume" }, "Resumed.")}><Play size={13} aria-label="Resume" /></button>}
                         <button className="btn min-h-8 px-2" title="Duplicate" onClick={() => act({ id: c.id, action: "duplicate" }, "Copied as a draft.")}><Copy size={13} aria-label="Duplicate" /></button>
-                        <button className="btn min-h-8 px-2" title="Export config" onClick={() => download(`${c.name.replace(/[^\w-]+/g, "-")}.json`, { name: c.name, goal: c.goal, audience: c.audience, nodes: c.nodes, edges: c.edges, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap })}><Download size={13} aria-label="Export config" /></button>
+                        <button className="btn min-h-8 px-2" title="Export config" onClick={() => download(`${c.name.replace(/[^\w-]+/g, "-")}.json`, { name: c.name, goal: c.goal, company: c.company, audience: c.audience, risk: c.risk, segments: c.segments, channelConfig: c.channelConfig, nodes: c.nodes, edges: c.edges, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap })}><Download size={13} aria-label="Export config" /></button>
                         {c.status === "Draft" && <button className="btn min-h-8 px-2" title="Delete draft" onClick={() => window.confirm(`Delete the draft "${c.name}"?`) && act({ id: c.id, action: "delete" }, "Draft deleted.")}><Trash2 size={13} aria-label="Delete" /></button>}
                       </span>
                     )}
@@ -102,7 +114,7 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
               ))}
             </tbody>
           </table>
-          {!data.campaigns.length && <Empty title="No campaigns yet">Create one to get started: choose who to reach, then the channels for each risk tier.</Empty>}
+          {!data.campaigns.length && <Empty title="No campaigns yet">Create one to get started: pick the portfolio, then load its allocation file.</Empty>}
         </div>
         {msg && <p className="px-4 pb-3 text-[12.5px] text-ink-2" role="status">{msg}</p>}
       </Card>
@@ -110,184 +122,153 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
   );
 }
 
-function Chips({ label, options, value, onChange, disabled }: { label: string; options: string[]; value: string[]; onChange: (v: string[]) => void; disabled: boolean }) {
-  return (
-    <div>
-      <div className="label mb-1.5">{label} <span className="normal-case tracking-normal text-muted">{value.length ? "" : "(all)"}</span></div>
-      <div className="flex flex-wrap gap-1.5">
-        {options.map((o) => {
-          const on = value.includes(o);
-          return <button key={o} type="button" disabled={disabled} aria-pressed={on} onClick={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])}
-            className={`rounded-full border px-2.5 py-1 text-[12.5px] ${on ? "border-brand bg-brand-soft font-medium text-brand" : "border-line bg-surface text-ink-2 hover:border-line-strong"}`}>{o}</button>;
-        })}
-      </div>
-    </div>
-  );
+function firstStep(c: CampaignView): PlanStep {
+  if (!c.ingest) return c.company === "All companies" ? "Company" : "Data";
+  if (!c.ingest.confirmed) return "Fields";
+  return "Review";
 }
 
 function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; data: Data; onBack: () => void; onSaved: (c: CampaignView) => void }) {
   const { user } = useApp();
-  const editable = can(user.role, "manageCampaigns") && ["Draft", "Scheduled", "Paused"].includes(campaign.status);
-  const [step, setStep] = useState<"Audience" | "Channels" | "Workflow" | "Agent" | "Schedule" | "Review & launch">("Audience");
-  const [flowKey, setFlowKey] = useState(0); // remounts the canvas after "Build from chosen channels"
-  const [stage, setStage] = useState<Stage>(stageFor(campaign.status));
+  const canManage = can(user.role, "manageCampaigns"), canApprove = can(user.role, "approveCampaigns");
   const [c, setC] = useState(campaign);
-  const [dirty, setDirty] = useState(false);
-  const [msg, setMsg] = useState("");
+  const editable = canManage && EDITABLE.includes(c.status);
+  const [stage, setStage] = useState<Stage>(stageFor(campaign.status));
+  const [step, setStep] = useState<PlanStep>(firstStep(campaign));
+  const [detailTab, setDetailTab] = useState<DetailTab>("Overview");
+  const [plan, setPlan] = useState<CampaignPlan | null>(null);
   const [check, setCheck] = useState<Check | null>(null);
-  const [aud, setAud] = useState<Check["audience"] | null>(null);
+  const [msg, setMsg] = useState("");
+  const [flowDirty, setFlowDirty] = useState(false);
+  const [flowKey, setFlowKey] = useState(0);
+  const [note, setNote] = useState("");
+  const rowsRef = useRef<{ headers: string[]; rows: string[][] } | null>(null);
   const flowRef = useRef<{ nodes: StepNode[]; edges: StepEdge[] }>({ nodes: campaign.nodes, edges: campaign.edges });
 
-  const set = (patch: Partial<CampaignView>) => { setC((x) => ({ ...x, ...patch })); setDirty(true); };
-  const onFlow = useCallback((nodes: StepNode[], edges: StepEdge[]) => {
-    const before = flowRef.current;
-    flowRef.current = { nodes, edges };
-    if (JSON.stringify(before) !== JSON.stringify({ nodes, edges })) setDirty(true);
-  }, []);
+  const loadPlan = useCallback(async () => {
+    try { const r = await fetch(`/api/campaigns?id=${c.id}&plan=1`, { cache: "no-store" }); if (r.ok) setPlan((await r.json()).plan); } catch { /* keep the last plan */ }
+  }, [c.id]);
+  useEffect(() => { loadPlan(); }, [loadPlan, c.updatedAt]);
 
-  useEffect(() => {
-    const t = setTimeout(async () => { const r = await post("/api/campaigns", { preview: c.audience }); if (r.ok) setAud(r.json); }, 250);
-    return () => clearTimeout(t);
-  }, [c.audience]);
-
-  async function save() {
-    const r = await post("/api/campaigns", { id: c.id, name: c.name, promptId: c.promptId ?? "", channels: channelsInUse(c), tierChannels: c.tierChannels ?? {}, audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
-    if (r.ok) { setC(r.json.campaign); onSaved(r.json.campaign); setDirty(false); setMsg("Saved."); } else setMsg(r.json.error ?? "Couldn't save.");
+  const accept = (next: CampaignView) => {
+    setC(next); onSaved(next);
+    if (!flowDirty) { flowRef.current = { nodes: next.nodes, edges: next.edges }; setFlowKey((k) => k + 1); }
+  };
+  const patch = useCallback(async (body: Record<string, unknown>) => {
+    const r = await post("/api/campaigns", { id: c.id, ...body }, "PATCH");
+    if (r.ok) { accept(r.json.campaign); setMsg(""); } else setMsg(r.json.error ?? "Couldn't save.");
+    return r.ok;
+  }, [c.id, flowDirty]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function ingest(body: Record<string, unknown>) {
+    const r = await post("/api/campaigns", { id: c.id, action: "ingest", ingest: body });
+    if (!r.ok) return r.json.error ?? "Couldn't load that data.";
+    accept(r.json.campaign); setStep("Fields");
+    return null;
+  }
+  async function previewRisk(risk: CampaignPlan["rules"]) {
+    const r = await post("/api/campaigns", { planPreview: { id: c.id, risk } });
+    if (r.ok) setPlan(r.json.plan);
+  }
+  async function runCheck() { const r = await post("/api/campaigns", { id: c.id, action: "check" }); if (r.ok) setCheck(r.json); }
+  async function action(a: string, done: string, extra: object = {}) {
+    if (flowDirty && !(await saveFlow())) return;
+    const r = await post("/api/campaigns", { id: c.id, action: a, ...extra });
+    if (r.ok) { accept(r.json.campaign); setMsg(done); setStage(stageFor(r.json.campaign.status)); }
+    else { setMsg(r.json.error ?? "That didn't work."); if (r.json.errors) setCheck(r.json); }
+  }
+  async function saveFlow() {
+    const r = await post("/api/campaigns", { id: c.id, ...flowRef.current }, "PATCH");
+    if (r.ok) { setC(r.json.campaign); onSaved(r.json.campaign); setFlowDirty(false); }
+    else setMsg(r.json.error ?? "Couldn't save the workflow.");
     return r.ok;
   }
-  async function runCheck() { if (dirty && !(await save())) return; const r = await post("/api/campaigns", { id: c.id, action: "check" }); if (r.ok) setCheck(r.json); }
-  async function action(a: string, done: string) {
-    if (a === "launch" && dirty && !(await save())) return;
-    const r = await post("/api/campaigns", { id: c.id, action: a });
-    if (r.ok) { setC(r.json.campaign); onSaved(r.json.campaign); setMsg(done); } else { setMsg(r.json.error ?? "That didn't work."); if (r.json.errors) setCheck(r.json); }
-  }
-  const setAudience = (patch: Partial<CampaignAudience>) => set({ audience: { ...c.audience, ...patch } });
-  const local = (iso: string) => new Date(new Date(iso).getTime() + 330 * 60_000).toISOString().slice(0, 16);
-  const fromLocal = (v: string) => new Date(`${v}:00+05:30`).toISOString();
+  // The canvas reports its layout once when it mounts; only changes after that count as edits.
+  const baseline = useRef<string | null>(null);
+  useEffect(() => { baseline.current = null; }, [flowKey, step]);
+  const onFlow = useCallback((nodes: StepNode[], edges: StepEdge[]) => {
+    flowRef.current = { nodes, edges };
+    const now = JSON.stringify({ nodes, edges });
+    if (baseline.current === null) { baseline.current = now; return; }
+    if (now !== baseline.current) setFlowDirty(true);
+  }, []);
+  const go = (s: PlanStep) => setStep(s);
+  const startsNow = Date.parse(c.startAt) <= Date.now();
 
   return (
     <>
       <div className="flex flex-wrap items-center gap-3">
-        <button className="btn btn-ghost" onClick={() => { if (!dirty || window.confirm("Leave without saving your changes?")) onBack(); }}><ArrowLeft size={14} aria-hidden="true" />All campaigns</button>
-        <input className="input min-w-64 flex-1 text-[15px] font-semibold" value={c.name} disabled={!editable} maxLength={80} onChange={(e) => set({ name: e.target.value })} aria-label="Campaign name" />
+        <button className="btn btn-ghost" onClick={() => { if (!flowDirty || window.confirm("Leave without saving the workflow?")) onBack(); }}><ArrowLeft size={14} aria-hidden="true" />All campaigns</button>
+        <input className="input min-w-64 flex-1 text-[15px] font-semibold" defaultValue={c.name} disabled={!editable} maxLength={80} onBlur={(e) => e.target.value !== c.name && patch({ name: e.target.value })} aria-label="Campaign name" />
+        <span className="text-[12.5px] text-muted">{c.company}</span>
         <Badge>{c.status}</Badge>
-        {editable && <button className="btn" disabled={!dirty} onClick={save}><Save size={14} aria-hidden="true" />{dirty ? "Save draft" : "Saved"}</button>}
-        {can(user.role, "manageCampaigns") && c.status === "Running" && <button className="btn" onClick={() => action("pause", "Paused. You can edit it now.")}><Pause size={14} aria-hidden="true" />Pause</button>}
-        {can(user.role, "manageCampaigns") && c.status === "Paused" && <button className="btn" onClick={() => action("resume", "Running again.")}><Play size={14} aria-hidden="true" />Resume</button>}
-        {can(user.role, "manageCampaigns") && ["Running", "Paused", "Scheduled"].includes(c.status) && <button className="btn" onClick={() => window.confirm("Stop this campaign for good?") && action("stop", "Stopped.")}><Square size={14} aria-hidden="true" />Stop</button>}
+        {canManage && c.status === "Running" && <button className="btn" onClick={() => action("pause", "Paused. You can edit it now.")}><Pause size={14} aria-hidden="true" />Pause</button>}
+        {canManage && c.status === "Paused" && <button className="btn" onClick={() => action("resume", "Running again.")}><Play size={14} aria-hidden="true" />Resume</button>}
+        {canManage && ["Running", "Paused", "Scheduled"].includes(c.status) && <button className="btn" onClick={() => window.confirm("Stop this campaign for good?") && action("stop", "Stopped.")}><Square size={14} aria-hidden="true" />Stop</button>}
       </div>
       {msg && <p className="text-[12.5px] text-ink-2" role="status">{msg}</p>}
+      {c.approval && (c.status === "Awaiting approval" || c.approval.decision === "returned") && (
+        <div className={`rounded-md border px-3 py-2 text-[12.5px] ${c.status === "Awaiting approval" ? "border-warn/30 bg-warn-soft text-warn" : "border-bad/30 bg-bad-soft text-bad"}`}>
+          {c.status === "Awaiting approval"
+            ? <>Sent for approval by {c.approval.submittedBy} on {d(c.approval.submittedAt)}. {canApprove ? "Review it below, then approve or send it back." : "Your Manager will approve it or send it back."}</>
+            : <>Sent back by {c.approval.decidedBy}: “{c.approval.note}”</>}
+        </div>
+      )}
 
       <StageBar stage={stage} status={c.status} onChange={setStage} />
 
-      {stage === "During" && <During campaign={c} />}
-      {stage === "After" && <After campaign={c} canManage={can(user.role, "manageCampaigns")} onDuplicate={async () => { const r = await post("/api/campaigns", { id: c.id, action: "duplicate" }); setMsg(r.ok ? "Copied as a new draft. Find it in the campaign list." : r.json.error ?? "Couldn't copy it."); }} />}
+      {stage !== "Before" && <CampaignTabs value={detailTab} onChange={setDetailTab} campaignId={c.id} />}
+      {stage === "During" && detailTab === "Overview" && <During campaign={c} />}
+      {stage === "After" && detailTab === "Overview" && <After campaign={c} canManage={canManage} onDuplicate={async () => { const r = await post("/api/campaigns", { id: c.id, action: "duplicate" }); setMsg(r.ok ? "Copied as a new draft. Find it in the campaign list." : r.json.error ?? "Couldn't copy it."); }} />}
+      {stage !== "Before" && detailTab !== "Overview" && <CampaignTabs.Body tab={detailTab} campaignId={c.id} />}
 
-      {stage === "Before" && <Tabs tabs={["Audience", "Channels", "Workflow", "Agent", "Schedule", "Review & launch"] as const} value={step} onChange={setStep} />}
-
-      {stage === "Before" && step === "Channels" && (
-        <ChannelsByRisk c={c} editable={editable} set={set} tiers={aud?.tiers} connectors={data.connectors} />
-      )}
-
-      {stage === "Before" && step === "Workflow" && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunk px-3 py-2 text-[12.5px] text-ink-2">
-            <span className="min-w-0 flex-1">
-              {channelsInUse(c).length
-                ? <>This campaign&apos;s channels: <b>{channelsInUse(c).map((k) => CHANNEL_INFO[k].title).join(", ")}</b>. Only these can be added, and each step only runs for the risk tiers given that channel.</>
-                : "No channels chosen yet. Pick the campaign's channels in Channels first."}
-            </span>
-            {editable && (
-              <button className="btn" disabled={!channelsInUse(c).length} onClick={() => {
-                if (flowRef.current.nodes.length > 2 && !window.confirm("Replace the current workflow with one built from the chosen channels?")) return;
-                const wf = workflowFromChannels(channelsInUse(c));
-                flowRef.current = wf; setC((x) => ({ ...x, nodes: wf.nodes, edges: wf.edges })); setDirty(true); setFlowKey((k) => k + 1);
-              }}>Build from chosen channels</button>
-            )}
-          </div>
-          <WorkflowCanvas key={`${flowKey}-${channelsInUse(c).join(",")}`} nodes={flowRef.current.nodes} edges={flowRef.current.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} allowed={channelsInUse(c)} />
-        </div>
-      )}
-
-      {stage === "Before" && step === "Agent" && (
-        <AgentStep c={{ ...c, nodes: flowRef.current.nodes, edges: flowRef.current.edges }} editable={editable} set={set} prompts={data.prompts} />
-      )}
-
-      {stage === "Before" && step === "Audience" && (
-        <div className="grid gap-4 xl:grid-cols-[1fr_300px]">
-          <Card title="Who this campaign reaches">
-            <div className="space-y-4">
-              <div className="seg" role="group" aria-label="Audience source">
-                <button type="button" disabled={!editable} aria-pressed={c.audience.source === "filters"} onClick={() => setAudience({ source: "filters" })}>Filters</button>
-                <button type="button" disabled={!editable} aria-pressed={c.audience.source === "list"} onClick={() => setAudience({ source: "list" })}>Upload a list</button>
+      {stage === "Before" && (
+        <>
+          <Stepper c={c} step={step} onChange={go} />
+          {step === "Company" && <CompanyStep c={c} data={data} editable={editable} patch={patch} />}
+          {step === "Data" && <DataStep c={c} plan={plan} editable={editable} patch={patch} ingest={ingest} rowsRef={rowsRef} />}
+          {step === "Fields" && <FieldsStep c={c} editable={editable} patch={patch} rowsRef={rowsRef} />}
+          {step === "Risk" && <RiskStep c={c} plan={plan} editable={editable} patch={patch} preview={previewRisk} />}
+          {step === "Segments" && <SegmentsStep plan={plan} />}
+          {step === "Channels" && <ChannelsStep c={c} plan={plan} data={data} editable={editable} patch={patch} />}
+          {step === "Workflow" && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunk px-3 py-2 text-[12.5px] text-ink-2">
+                <span className="min-w-0 flex-1">
+                  {channelsInUse(c).length
+                    ? <>Drawn from the channels you chose: <b>{channelsInUse(c).map(channelTitle).join(", ")}</b>, least intrusive first, checking for payment after each. Each step only runs for the segments given that channel. {c.flowEdited ? "You've edited it by hand, so it no longer follows the channels." : "It updates when the channels change."}</>
+                    : "No channels chosen yet. Pick them per segment in Channels."}
+                </span>
+                {editable && flowDirty && <button className="btn btn-primary" onClick={saveFlow}><Save size={14} aria-hidden="true" />Save workflow</button>}
+                {editable && <button className="btn" disabled={!channelsInUse(c).length} onClick={() => (!c.flowEdited || window.confirm("Replace your edited workflow with one drawn from the channels?")) && (setFlowDirty(false), patch({ rebuildFlow: true }))}><RefreshCw size={14} aria-hidden="true" />Redraw from channels</button>}
               </div>
-              {c.audience.source === "filters" ? (
-                <>
-                  <Chips label="Products" options={data.options.products} value={c.audience.products} onChange={(v) => setAudience({ products: v })} disabled={!editable} />
-                  <Chips label="Segments" options={SEGMENTS} value={c.audience.segments} onChange={(v) => setAudience({ segments: v })} disabled={!editable} />
-                  <Chips label="Languages" options={data.options.languages} value={c.audience.languages} onChange={(v) => setAudience({ languages: v })} disabled={!editable} />
-                  <Chips label="Portfolios" options={data.options.portfolios} value={c.audience.portfolios} onChange={(v) => setAudience({ portfolios: v })} disabled={!editable} />
-                  <div className="flex flex-wrap gap-3">
-                    <label className="text-[12px] text-muted">Days past due from<input type="number" min={0} max={999} className="input mt-1 block w-28" disabled={!editable} value={c.audience.minDpd} onChange={(e) => setAudience({ minDpd: Number(e.target.value) })} /></label>
-                    <label className="text-[12px] text-muted">to<input type="number" min={0} max={999} className="input mt-1 block w-28" disabled={!editable} value={c.audience.maxDpd} onChange={(e) => setAudience({ maxDpd: Number(e.target.value) })} /></label>
-                  </div>
-                </>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-[12.5px] text-muted">Paste loan IDs, or upload a .csv or .txt file with one loan ID per line.</p>
-                  <input type="file" accept=".csv,.txt" disabled={!editable} className="text-[13px]" onChange={async (e) => {
-                    const f = e.target.files?.[0]; if (!f) return;
-                    setAudience({ loanIds: [...new Set((await f.text()).split(/[^A-Za-z0-9_-]+/).filter((x) => /^LN\d+$/i.test(x)).map((x) => x.toUpperCase()))] });
-                  }} />
-                  <textarea rows={6} className="input block w-full font-mono text-[12px]" disabled={!editable} value={c.audience.loanIds.join("\n")} placeholder={"LN2024000123\nLN2024000456"}
-                    onChange={(e) => setAudience({ loanIds: e.target.value.split(/[\s,;]+/).filter(Boolean) })} />
-                </div>
-              )}
-            </div>
-          </Card>
-          <Card title="Audience">
-            {!aud ? <p className="text-[13px] text-muted">Counting…</p> : (
-              <dl className="divide-y divide-line text-[13px]">
-                {[
-                  ["Will be contacted", num(aud.eligible)], ["Outstanding at stake", inr(aud.outstanding)], ["Left out: disputed", num(aud.excluded.disputed)],
-                  ["Skipped on voice/IVR: do-not-call", num(aud.excluded.doNotCall)], ["Skipped on WhatsApp: no opt-in", num(aud.excluded.noWhatsApp)],
-                  ...(c.audience.source === "list" ? [["Loan IDs not found", num(aud.unmatched)]] : []),
-                ].map(([k, v]) => <div key={k} className="flex justify-between gap-3 py-2"><dt className="text-muted">{k}</dt><dd className="font-medium num">{v}</dd></div>)}
-              </dl>
-            )}
-          </Card>
-        </div>
-      )}
-
-      {stage === "Before" && step === "Schedule" && (
-        <Card title="When it runs" sub="Steps only send inside the calling window, and never more than the daily cap per borrower.">
-          <fieldset disabled={!editable} className="grid max-w-2xl gap-4 sm:grid-cols-2">
-            <label className="text-[13px] font-medium">Start (IST)<input type="datetime-local" className="input mt-1 block w-full" value={local(c.startAt)} onChange={(e) => e.target.value && set({ startAt: fromLocal(e.target.value) })} /></label>
-            <label className="text-[13px] font-medium">End (IST)<input type="datetime-local" className="input mt-1 block w-full" value={local(c.endAt)} onChange={(e) => e.target.value && set({ endAt: fromLocal(e.target.value) })} /></label>
-            <label className="text-[13px] font-medium">Attempts per borrower per day<input type="number" min={1} max={20} className="input mt-1 block w-full" value={c.dailyCap} onChange={(e) => set({ dailyCap: Number(e.target.value) })} /></label>
-            <label className="flex items-start gap-2 self-end text-[13px] font-medium">
-              <input type="checkbox" className="mt-0.5 h-4 w-4 accent-[var(--color-brand)]" checked={c.salaryWeekBoost} onChange={(e) => set({ salaryWeekBoost: e.target.checked })} />
-              <span>Salary-week boost<span className="block text-[12px] font-normal text-muted">Send more on days 1–7, when most borrowers pay.</span></span>
-            </label>
-          </fieldset>
-        </Card>
-      )}
-
-      {stage === "Before" && step === "Review & launch" && (
-        <Card title="Check and launch" sub="Every step, connector and the audience are checked against the compliance rules before anything goes out.">
-          <div className="flex flex-wrap gap-2">
-            <button className="btn" onClick={runCheck}>Run checks</button>
-            {editable && <button className="btn btn-primary" onClick={() => action("launch", Date.parse(c.startAt) <= Date.now() ? "Launched. It's running now." : `Scheduled for ${d(c.startAt)}.`)}><Rocket size={14} aria-hidden="true" />{Date.parse(c.startAt) <= Date.now() ? "Launch now" : "Schedule"}</button>}
-          </div>
-          {check && (
-            <div className="mt-4 space-y-3">
-              {check.errors.length ? (
-                <ul className="space-y-1.5">{check.errors.map((e) => <li key={e} className="rounded-md border border-bad/30 bg-bad-soft px-3 py-2 text-[12.5px] text-bad">{e}</li>)}</ul>
-              ) : <p className="rounded-md border border-good/30 bg-good-soft px-3 py-2 text-[12.5px] text-good">No blocking issues. {num(check.audience.eligible)} borrowers, {inr(check.audience.outstanding)} outstanding.</p>}
-              <ul className="space-y-1.5">{check.warnings.map((w) => <li key={w} className="rounded-md bg-sunk px-3 py-2 text-[12.5px] text-ink-2">{w}</li>)}</ul>
+              <WorkflowCanvas key={flowKey} nodes={flowRef.current.nodes} edges={flowRef.current.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} allowed={channelsInUse(c)} />
             </div>
           )}
-        </Card>
+          {step === "Review" && (
+            <>
+              <ReviewStep c={c} plan={plan} data={data} check={check} onCheck={runCheck} />
+              <Card title={c.status === "Awaiting approval" ? "Approval" : "Launch"}>
+                <div className="flex flex-wrap items-center gap-2">
+                  {editable && canApprove && <button className="btn btn-primary" onClick={() => action("launch", startsNow ? "Launched. It's running now." : `Scheduled for ${d(c.startAt)}.`)}><Rocket size={14} aria-hidden="true" />{startsNow ? "Launch now" : "Schedule"}</button>}
+                  {editable && !canApprove && c.status === "Draft" && <>
+                    <input className="input min-w-64 flex-1" placeholder="Note for your Manager (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+                    <button className="btn btn-primary" onClick={() => action("submit", "Sent to your Manager for approval.", { note })}><Send size={14} aria-hidden="true" />Send for approval</button>
+                  </>}
+                  {c.status === "Awaiting approval" && canApprove && <>
+                    <input className="input min-w-64 flex-1" placeholder="Note (needed to send it back)" value={note} onChange={(e) => setNote(e.target.value)} />
+                    <button className="btn btn-primary" onClick={() => action("approve", startsNow ? "Approved and launched." : `Approved. It starts ${d(c.startAt)}.`, { note })}><CheckCircle2 size={14} aria-hidden="true" />Approve and {startsNow ? "launch" : "schedule"}</button>
+                    <button className="btn" onClick={() => action("return", "Sent back to the supervisor.", { note })}><Undo2 size={14} aria-hidden="true" />Send back</button>
+                  </>}
+                  {c.status === "Awaiting approval" && canManage && !canApprove && <button className="btn" onClick={() => action("withdraw", "Withdrawn. You can edit it again.")}><Undo2 size={14} aria-hidden="true" />Withdraw to edit</button>}
+                  {!canManage && !canApprove && <span className="text-[12.5px] text-muted">Only supervisors build campaigns and Managers approve them.</span>}
+                  {canApprove && !canManage && c.status !== "Awaiting approval" && <span className="text-[12.5px] text-muted">Supervisors build campaigns and send them to you for approval.</span>}
+                </div>
+              </Card>
+            </>
+          )}
+          {step !== "Review" && <NextBar step={step} onChange={go} disabled={(step === "Data" && !c.ingest) || (step === "Fields" && !c.ingest?.confirmed)}
+            hint={step === "Fields" && !c.ingest?.confirmed ? "Confirm the fields to continue" : step === "Data" && !c.ingest ? "Load data to continue" : undefined} />}
+        </>
       )}
     </>
   );

@@ -187,7 +187,28 @@ export interface StepEdge { id: string; source: string; target: string; label?: 
 export type ChannelKind = "telecaller" | "whatsapp" | "voice" | "ivr";
 export type TierKey = "High" | "Medium" | "Low";
 
-export type CampaignStatus = "Draft" | "Scheduled" | "Running" | "Paused" | "Completed";
+export type CampaignStatus = "Draft" | "Awaiting approval" | "Scheduled" | "Running" | "Paused" | "Completed";
+export type Slot = "morning" | "afternoon" | "evening";
+
+/** The allocation file (or demo data) a campaign was built from, and how its columns were read. */
+export interface CampaignIngest {
+  source: "file" | "demo";
+  fileName?: string;
+  rows: number;
+  matched: number;          // rows whose loan ID is in Kollect's book
+  columns: { column: string; field: string | null; how: "name" | "values" | "none" | "user"; sample: string }[];
+  confirmed: boolean;
+  at: string;
+  by: string;
+}
+
+/** Per-channel settings, chosen once the segments' channel mix is set. */
+export interface ChannelConfig {
+  voice?: { slots: Slot[]; concurrency: number; languages: string[]; agents: string[] };
+  ivr?: { voice: string; slots: Slot[] };
+  whatsapp?: { template: string; slots: Slot[]; reminderHours: number };
+  telecaller?: { seats: number; languages: string[]; priorityFirst: boolean };
+}
 export interface CampaignAudience {
   source: "filters" | "list";
   products: string[]; segments: string[]; languages: string[]; portfolios: string[];
@@ -204,8 +225,16 @@ export interface Campaign {
   promptId?: string;    // published Prompt Library prompt the voice agents use
   /** The channels this campaign uses, picked first. Every later step only offers these. */
   channels?: ChannelKind[];
-  /** Which of those channels each risk tier gets. */
+  /** Which of those channels each risk tier gets (older drafts). */
   tierChannels?: Partial<Record<TierKey, ChannelKind[]>>;
+  ingest?: CampaignIngest;
+  risk?: { bureauBelow: number; dpdAbove: number; lateAtLeast: number; loansAtLeast: number };
+  /** Channel mix per segment, keyed "bucket|tier" (e.g. "31–60|High"). */
+  segments?: Record<string, ChannelKind[]>;
+  channelConfig?: ChannelConfig;
+  /** True once someone edits the workflow by hand, so it isn't rebuilt from the channels. */
+  flowEdited?: boolean;
+  approval?: { submittedBy?: string; submittedAt?: string; decidedBy?: string; decidedAt?: string; note?: string; decision?: "approved" | "returned" };
   status: CampaignStatus;
   audience: CampaignAudience;
   nodes: StepNode[];

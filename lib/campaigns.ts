@@ -70,10 +70,11 @@ export const CHANNEL_INFO: Record<ChannelKind, { title: string; hint: string }> 
 /** Order a workflow built from the channels uses: least intrusive first, people last. */
 const BUILD_ORDER: ChannelKind[] = ["whatsapp", "ivr", "voice", "telecaller"];
 export const TIER_KEYS: TierKey[] = ["High", "Medium", "Low"];
-/** The campaign's channels. Older drafts without a list fall back to whatever their tiers use. */
-export const channelsInUse = (c: Pick<Campaign, "channels" | "tierChannels">) =>
-  c.channels ? CHANNELS.filter((k) => c.channels!.includes(k)) : CHANNELS.filter((k) => TIER_KEYS.some((t) => c.tierChannels?.[t]?.includes(k)));
-export const usesVoice = (c: Pick<Campaign, "channels" | "tierChannels" | "nodes">) =>
+/** The campaign's channels: whatever its segments get. Older drafts use their own list or their tiers. */
+export const channelsInUse = (c: Pick<Campaign, "channels" | "tierChannels"> & { segments?: Campaign["segments"] }) =>
+  c.segments ? CHANNELS.filter((k) => Object.values(c.segments!).some((l) => l.includes(k)))
+    : c.channels ? CHANNELS.filter((k) => c.channels!.includes(k)) : CHANNELS.filter((k) => TIER_KEYS.some((t) => c.tierChannels?.[t]?.includes(k)));
+export const usesVoice = (c: Pick<Campaign, "channels" | "tierChannels" | "nodes"> & { segments?: Campaign["segments"] }) =>
   channelsInUse(c).some((k) => k === "voice" || k === "ivr") || c.nodes.some((n) => n.kind === "voice" || n.kind === "ivr");
 
 /** A simple linear workflow from the chosen channels: each one in turn with a day's wait between, then End. */
@@ -162,7 +163,7 @@ export function checkCampaign(s: Store, c: Campaign, tiers?: Record<TierKey, num
     if (needs && s.connectors.find((x) => x.kind === needs)?.status !== "Connected") errors.push(`"${n.data.label}" needs the ${connectorDef(needs).title} integration connected.`);
   }
   if (usesVoice(c) && !s.prompts.some((p) => p.id === c.promptId && p.status === "Published"))
-    errors.push("Choose a published prompt for the AI voice and IVR steps (Agent).");
+    errors.push("Choose a published prompt for the AI voice and IVR steps (Channels → AI voice).");
   const inUse = channelsInUse(c);
   if (!inUse.length) errors.push("Choose the channels for this campaign (Channels).");
   for (const n of c.nodes) {
@@ -170,7 +171,9 @@ export function checkCampaign(s: Store, c: Campaign, tiers?: Record<TierKey, num
     if (isChannel && !inUse.includes(n.kind as ChannelKind))
       errors.push(`"${n.data.label}" uses ${stepDef(n.kind).title}, which isn't one of this campaign's channels. Add it in Channels or remove the step.`);
   }
-  for (const t of TIER_KEYS) {
+  if (c.ingest && !c.ingest.confirmed) errors.push("Confirm how the file's columns were read (Fields).");
+  if (c.segments) for (const [k, list] of Object.entries(c.segments)) if (!list.length) warnings.push(`Segment ${k.replace("|", " · ")} risk has no channel and won't be contacted.`);
+  if (!c.segments) for (const t of TIER_KEYS) {
     const n = tiers?.[t] ?? 0;
     const mine = (c.tierChannels?.[t] ?? []).filter((k) => inUse.includes(k));
     if (inUse.length && n && !mine.length) warnings.push(`${n} ${t.toLowerCase()}-risk borrower${n === 1 ? " has" : "s have"} no channel and won't be contacted.`);

@@ -18,9 +18,9 @@ type CampaignLike = Omit<Campaign, "members"> & { memberCount: number; audienceS
 interface DetailResponse { detail: Detail; plan: { tiers: Record<RiskTier, number>; accounts: number } }
 
 const STAGES: { key: Stage; title: string; hint: string }[] = [
-  { key: "Before", title: "Before", hint: "Audience, channels, workflow, agent, checks" },
-  { key: "During", title: "During", hint: "Live progress, channels, escalations" },
-  { key: "After", title: "After", hint: "Results, cost, learnings, report" },
+  { key: "Before", title: "Before", hint: "Company, data, risk, segments, channels, review" },
+  { key: "During", title: "During", hint: "Live progress, conversations, compliance" },
+  { key: "After", title: "After", hint: "Results by segment, cost, report" },
 ];
 
 export function StageBar({ stage, status, onChange }: { stage: Stage; status: CampaignStatus; onChange: (s: Stage) => void }) {
