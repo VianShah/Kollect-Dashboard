@@ -7,7 +7,7 @@ import { post, useApi } from "@/components/useApi";
 import { Badge, Card, Empty, ErrorNote, Kpi, Loading, Tabs } from "@/components/ui";
 import type { AgentOption } from "@/components/WorkflowCanvas";
 import { After, AgentStep, ChannelsByRisk, During, StageBar, stageFor, type Stage } from "@/components/CampaignStages";
-import { CONNECTOR_DEFS, channelsInUse, stepDef, workflowFromChannels } from "@/lib/campaigns";
+import { CHANNEL_INFO, CONNECTOR_DEFS, channelsInUse, stepDef, workflowFromChannels } from "@/lib/campaigns";
 import { can } from "@/lib/roles";
 import { d, inr, num } from "@/lib/format";
 import type { Campaign, CampaignAudience, Connector, StepEdge, StepNode } from "@/lib/types";
@@ -152,7 +152,7 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
   }, [c.audience]);
 
   async function save() {
-    const r = await post("/api/campaigns", { id: c.id, name: c.name, promptId: c.promptId ?? "", tierChannels: c.tierChannels ?? {}, audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
+    const r = await post("/api/campaigns", { id: c.id, name: c.name, promptId: c.promptId ?? "", channels: channelsInUse(c), tierChannels: c.tierChannels ?? {}, audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
     if (r.ok) { setC(r.json.campaign); onSaved(r.json.campaign); setDirty(false); setMsg("Saved."); } else setMsg(r.json.error ?? "Couldn't save.");
     return r.ok;
   }
@@ -195,8 +195,8 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
           <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunk px-3 py-2 text-[12.5px] text-ink-2">
             <span className="min-w-0 flex-1">
               {channelsInUse(c).length
-                ? <>Chosen channels: <b>{channelsInUse(c).map((k) => stepDef(k).title).join(", ")}</b>. Each step only runs for the risk tiers you gave that channel.</>
-                : "No channels chosen yet. Pick them for each risk tier in Channels, then build the workflow from them."}
+                ? <>This campaign&apos;s channels: <b>{channelsInUse(c).map((k) => CHANNEL_INFO[k].title).join(", ")}</b>. Only these can be added, and each step only runs for the risk tiers given that channel.</>
+                : "No channels chosen yet. Pick the campaign's channels in Channels first."}
             </span>
             {editable && (
               <button className="btn" disabled={!channelsInUse(c).length} onClick={() => {
@@ -206,7 +206,7 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
               }}>Build from chosen channels</button>
             )}
           </div>
-          <WorkflowCanvas key={flowKey} nodes={flowRef.current.nodes} edges={flowRef.current.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} />
+          <WorkflowCanvas key={`${flowKey}-${channelsInUse(c).join(",")}`} nodes={flowRef.current.nodes} edges={flowRef.current.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} allowed={channelsInUse(c)} />
         </div>
       )}
 

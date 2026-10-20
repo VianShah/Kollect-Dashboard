@@ -59,25 +59,36 @@ export const TEMPLATES = ["EMI reminder", "Payment link", "PTP reminder", "Overd
 export const SLOT_LABEL = { any: "Any time in the window", morning: "08:00–12:00", afternoon: "12:00–17:00", evening: "17:00–19:00" } as const;
 export const CONDITION_LABEL = { answered: "Answered the call", paid: "Paid", promised: "Promised to pay", replied: "Replied on WhatsApp", disputed: "Raised a dispute" } as const;
 
-/** Channels in the order a workflow built from them uses: cheapest and least intrusive first. */
-export const CHANNELS: ChannelKind[] = ["whatsapp", "sms", "ivr", "voice", "telecaller"];
+/** The four outreach channels a campaign can use, in the order they're shown. */
+export const CHANNELS: ChannelKind[] = ["telecaller", "whatsapp", "voice", "ivr"];
+export const CHANNEL_INFO: Record<ChannelKind, { title: string; hint: string }> = {
+  telecaller: { title: "Telecallers", hint: "Human desk calls and hand-offs" },
+  whatsapp: { title: "WhatsApp", hint: "Approved templates and payment links" },
+  voice: { title: "AI voice", hint: "Voice agent in the borrower's language" },
+  ivr: { title: "IVR", hint: "Recorded reminder with keypad options" },
+};
+/** Order a workflow built from the channels uses: least intrusive first, people last. */
+const BUILD_ORDER: ChannelKind[] = ["whatsapp", "ivr", "voice", "telecaller"];
 export const TIER_KEYS: TierKey[] = ["High", "Medium", "Low"];
-export const channelsInUse = (c: Pick<Campaign, "tierChannels">) => CHANNELS.filter((k) => TIER_KEYS.some((t) => c.tierChannels?.[t]?.includes(k)));
-export const usesVoice = (c: Pick<Campaign, "tierChannels" | "nodes">) =>
+/** The campaign's channels. Older drafts without a list fall back to whatever their tiers use. */
+export const channelsInUse = (c: Pick<Campaign, "channels" | "tierChannels">) =>
+  c.channels ? CHANNELS.filter((k) => c.channels!.includes(k)) : CHANNELS.filter((k) => TIER_KEYS.some((t) => c.tierChannels?.[t]?.includes(k)));
+export const usesVoice = (c: Pick<Campaign, "channels" | "tierChannels" | "nodes">) =>
   channelsInUse(c).some((k) => k === "voice" || k === "ivr") || c.nodes.some((n) => n.kind === "voice" || n.kind === "ivr");
 
 /** A simple linear workflow from the chosen channels: each one in turn with a day's wait between, then End. */
 export function workflowFromChannels(channels: ChannelKind[]): { nodes: StepNode[]; edges: StepEdge[] } {
   const nodes: StepNode[] = [{ id: "n1", kind: "start", x: 40, y: 160, data: { label: "Start" } }];
   const defaults: Record<ChannelKind, Partial<StepNode["data"]>> = {
-    whatsapp: { template: "Payment link", slot: "afternoon" }, sms: { template: "EMI reminder", slot: "morning" },
+    whatsapp: { template: "Payment link", slot: "afternoon" },
     ivr: { agent: "auto", slot: "evening" }, voice: { agent: "auto", slot: "evening" }, telecaller: { seats: 2 },
   };
+  const ordered = BUILD_ORDER.filter((k) => channels.includes(k));
   let x = 230;
-  channels.forEach((k, i) => {
+  ordered.forEach((k, i) => {
     nodes.push({ id: `n${nodes.length + 1}`, kind: k, x, y: 150, data: { label: stepDef(k).title, ...defaults[k] } });
     x += 200;
-    if (i < channels.length - 1) { nodes.push({ id: `n${nodes.length + 1}`, kind: "wait", x, y: 160, data: { label: "Wait 1 day", waitHours: 24 } }); x += 200; }
+    if (i < ordered.length - 1) { nodes.push({ id: `n${nodes.length + 1}`, kind: "wait", x, y: 160, data: { label: "Wait 1 day", waitHours: 24 } }); x += 200; }
   });
   nodes.push({ id: `n${nodes.length + 1}`, kind: "end", x, y: 160, data: { label: "Done" } });
   const edges = nodes.slice(1).map((n, i) => ({ id: `e${i + 1}`, source: nodes[i].id, target: n.id }));
@@ -153,14 +164,18 @@ export function checkCampaign(s: Store, c: Campaign, tiers?: Record<TierKey, num
   if (usesVoice(c) && !s.prompts.some((p) => p.id === c.promptId && p.status === "Published"))
     errors.push("Choose a published prompt for the AI voice and IVR steps (Agent).");
   const inUse = channelsInUse(c);
-  if (!inUse.length) errors.push("Choose channels for at least one risk tier (Channels).");
+  if (!inUse.length) errors.push("Choose the channels for this campaign (Channels).");
+  for (const n of c.nodes) {
+    const isChannel = !["start", "end", "wait", "branch"].includes(n.kind);
+    if (isChannel && !inUse.includes(n.kind as ChannelKind))
+      errors.push(`"${n.data.label}" uses ${stepDef(n.kind).title}, which isn't one of this campaign's channels. Add it in Channels or remove the step.`);
+  }
   for (const t of TIER_KEYS) {
     const n = tiers?.[t] ?? 0;
-    if (inUse.length && n && !c.tierChannels?.[t]?.length) warnings.push(`${n} ${t.toLowerCase()}-risk borrower${n === 1 ? " has" : "s have"} no channel and won't be contacted.`);
+    const mine = (c.tierChannels?.[t] ?? []).filter((k) => inUse.includes(k));
+    if (inUse.length && n && !mine.length) warnings.push(`${n} ${t.toLowerCase()}-risk borrower${n === 1 ? " has" : "s have"} no channel and won't be contacted.`);
   }
-  for (const k of inUse) if (!c.nodes.some((n) => n.kind === k)) warnings.push(`${stepDef(k).title} is chosen for a risk tier but isn't in the workflow, so it won't run.`);
-  for (const n of c.nodes) if ((CHANNELS as string[]).includes(n.kind) && !inUse.includes(n.kind as ChannelKind))
-    warnings.push(`"${n.data.label}" won't reach anyone: no risk tier uses ${stepDef(n.kind).title}.`);
+  for (const k of inUse) if (!c.nodes.some((n) => n.kind === k)) warnings.push(`${CHANNEL_INFO[k].title} is one of the campaign's channels but isn't in the workflow, so it won't run.`);
   const aud = audienceSummary(s, c.audience);
   if (!aud.eligible) errors.push("The audience is empty.");
   if (aud.excluded.disputed) warnings.push(`${aud.excluded.disputed} disputed account${aud.excluded.disputed === 1 ? "" : "s"} will be left out.`);

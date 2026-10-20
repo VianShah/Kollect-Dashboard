@@ -48,8 +48,10 @@ const edgeStyle = (label?: string): Partial<Edge> => ({
 });
 const toEdges = (edges: StepEdge[]): Edge[] => edges.map((e) => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.label, ...edgeStyle(e.label) }));
 
-function Inner({ nodes: initialNodes, edges: initialEdges, agents, readOnly, onChange }: {
+function Inner({ nodes: initialNodes, edges: initialEdges, agents, readOnly, onChange, allowed }: {
   nodes: StepNode[]; edges: StepEdge[]; agents: AgentOption[]; readOnly: boolean; onChange: (nodes: StepNode[], edges: StepEdge[]) => void;
+  /** Channel step kinds this campaign may use; flow steps (wait, if/else, end) are always offered. */
+  allowed?: StepKind[];
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(toFlow(initialNodes));
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(toEdges(initialEdges));
@@ -90,7 +92,7 @@ function Inner({ nodes: initialNodes, edges: initialEdges, agents, readOnly, onC
         {!readOnly && (
           <div className="flex flex-wrap gap-1.5 border-b border-line px-3 py-2">
             <span className="label mr-1 self-center">Add step</span>
-            {STEP_DEFS.filter((s) => s.kind !== "start").map((s) => (
+            {STEP_DEFS.filter((s) => s.kind !== "start" && (!allowed || ["wait", "branch", "end"].includes(s.kind) || allowed.includes(s.kind))).map((s) => (
               <button key={s.kind} className="btn min-h-7 px-2 text-[12px]" onClick={() => add(s.kind)} title={s.hint}>
                 <span className="h-2 w-2 rounded-full" style={{ background: s.color }} aria-hidden="true" />{s.title}
               </button>

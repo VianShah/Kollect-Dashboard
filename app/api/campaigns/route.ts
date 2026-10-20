@@ -14,13 +14,15 @@ function tierCounts(s: Store, a: CampaignAudience) {
   return tiers;
 }
 
-/** Only known channels, per known tier, no duplicates. */
-function cleanTierChannels(v: unknown): Campaign["tierChannels"] {
+const cleanChannels = (v: unknown): ChannelKind[] => (Array.isArray(v) ? CHANNELS.filter((k) => v.includes(k)) : []);
+
+/** Per known tier, only channels the campaign itself uses, no duplicates. */
+function cleanTierChannels(v: unknown, allowed: ChannelKind[]): Campaign["tierChannels"] {
   const out: Partial<Record<TierKey, ChannelKind[]>> = {};
   if (!v || typeof v !== "object") return out;
   for (const t of TIER_KEYS) {
     const list = (v as Record<string, unknown>)[t];
-    if (Array.isArray(list)) out[t] = CHANNELS.filter((k) => list.includes(k));
+    if (Array.isArray(list)) out[t] = allowed.filter((k) => list.includes(k));
   }
   return out;
 }
@@ -110,7 +112,8 @@ export async function POST(req: Request) {
       id: `C${++store.campaignSeq}`, name: str(body.import ? src.name : body.create.name, 80) || "Untitled campaign", goal: str(src.goal, 200),
       company: store.portfolios.includes(src.company) ? src.company : "All companies", target: num(src.target, 0, 1e10, 0),
       promptId: store.prompts.find((p) => p.id === src.promptId && p.status === "Published")?.id,
-      tierChannels: cleanTierChannels(src.tierChannels),
+      channels: cleanChannels(src.channels),
+      tierChannels: cleanTierChannels(src.tierChannels, cleanChannels(src.channels)),
       status: "Draft", audience: cleanAudience(src.audience), nodes: flow.nodes, edges: flow.edges,
       startAt: new Date(now + DAY).toISOString(), endAt: new Date(now + 8 * DAY).toISOString(),
       salaryWeekBoost: src.salaryWeekBoost !== false, dailyCap: num(src.dailyCap, 1, store.compliance.maxPerDay, store.compliance.maxPerDay),
@@ -179,7 +182,8 @@ export async function PATCH(req: Request) {
     c.promptId = body.promptId || undefined;
   }
   if (body.audience) c.audience = cleanAudience(body.audience);
-  if (body.tierChannels !== undefined) c.tierChannels = cleanTierChannels(body.tierChannels);
+  if (body.channels !== undefined) c.channels = cleanChannels(body.channels);
+  if (body.tierChannels !== undefined || body.channels !== undefined) c.tierChannels = cleanTierChannels(body.tierChannels ?? c.tierChannels, c.channels ?? []);
   if (body.nodes || body.edges) {
     const flow = cleanFlow(body.nodes ?? c.nodes, body.edges ?? c.edges);
     if (typeof flow === "string") return bad(flow);

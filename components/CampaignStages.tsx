@@ -6,7 +6,7 @@ import { useApi } from "./useApi";
 import { C, Card, Empty, Kpi, Loading, axisProps, tooltipStyle } from "./ui";
 import type { campaignDetail } from "@/lib/campaigns";
 import { TIERS, TIER_PLAYBOOK, type RiskTier } from "@/lib/portfolio";
-import { CHANNELS, channelsInUse, stepDef, usesVoice } from "@/lib/campaigns";
+import { CHANNELS, CHANNEL_INFO, channelsInUse, stepDef, usesVoice } from "@/lib/campaigns";
 import { TONES } from "@/lib/prompts";
 import { d, dt, inr, num, shortDay } from "@/lib/format";
 import type { Campaign, CampaignStatus, ChannelKind, Connector } from "@/lib/types";
@@ -47,23 +47,50 @@ function useDetail(id: string, poll?: number) {
 
 const TIER_TONE: Record<RiskTier, string> = { High: "text-bad", Medium: "text-warn", Low: "text-good" };
 
-/** Step 2: the campaign manager picks the channels for each risk tier. Nothing is pre-selected. */
+/** Step 2: pick the campaign's channels first, then which of them each risk tier gets. */
 export function ChannelsByRisk({ c, editable, set, tiers, connectors }: {
   c: CampaignLike; editable: boolean; set: (p: Partial<CampaignLike>) => void;
   tiers?: Record<RiskTier, number>; connectors: Connector[];
 }) {
   const total = tiers ? tiers.High + tiers.Medium + tiers.Low : 0;
-  const chosen = (t: RiskTier) => c.tierChannels?.[t] ?? [];
-  const toggle = (t: RiskTier, k: ChannelKind) => {
+  const picked = channelsInUse(c);
+  const chosen = (t: RiskTier) => (c.tierChannels?.[t] ?? []).filter((k) => picked.includes(k));
+  const status = (k: ChannelKind) => connectors.find((x) => x.kind === stepDef(k).needs)?.status ?? "Not connected";
+  // Adding a channel to the campaign offers it to every tier; removing it takes it off every tier.
+  const togglePick = (k: ChannelKind) => {
+    const on = picked.includes(k);
+    const next = CHANNELS.filter((x) => (x === k ? !on : picked.includes(x)));
+    const tierChannels = Object.fromEntries(TIERS.map((t) => [t, CHANNELS.filter((x) => next.includes(x) && (x === k ? !on : chosen(t).includes(x)))]));
+    set({ channels: next, tierChannels });
+  };
+  const toggleTier = (t: RiskTier, k: ChannelKind) => {
     const list = chosen(t).includes(k) ? chosen(t).filter((x) => x !== k) : [...chosen(t), k];
     set({ tierChannels: { ...(c.tierChannels ?? {}), [t]: CHANNELS.filter((x) => list.includes(x)) } });
   };
-  const status = (k: ChannelKind) => connectors.find((x) => x.kind === stepDef(k).needs)?.status ?? "Not connected";
-  const inUse = channelsInUse(c);
   return (
     <div className="space-y-4">
-      <Card title="Channels for each risk tier" sub="Choose how each group is reached. Risk comes from the Portfolio model (bureau score, days late, payment history), worked out from this campaign's audience. Nothing is chosen for you.">
-        {!tiers ? <Loading rows={1} /> : (
+      <Card title="Channels for this campaign" sub="Pick the channels this campaign uses. The risk tiers, workflow and agent steps only offer what you pick here.">
+        <fieldset disabled={!editable} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {CHANNELS.map((k) => {
+            const on = picked.includes(k);
+            const st = status(k);
+            return (
+              <button key={k} type="button" aria-pressed={on} onClick={() => togglePick(k)}
+                className={`rounded-lg border p-3 text-left ${on ? "border-brand bg-brand-soft" : "border-line bg-surface hover:border-line-strong"}`}>
+                <span className="flex items-center justify-between gap-2">
+                  <span className={`text-[14px] font-semibold ${on ? "text-brand" : ""}`}>{CHANNEL_INFO[k].title}</span>
+                  <span className={`h-4 w-4 shrink-0 rounded border ${on ? "border-brand bg-brand" : "border-line-strong"}`} aria-hidden="true" />
+                </span>
+                <span className="mt-1 block text-[12px] text-muted">{CHANNEL_INFO[k].hint}</span>
+                <span className={`mt-2 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${st === "Connected" ? "bg-good-soft text-good" : "bg-warn-soft text-warn"}`}>{st === "Connected" ? "Connected" : `${st}: see Integrations`}</span>
+              </button>
+            );
+          })}
+        </fieldset>
+      </Card>
+
+      <Card title="Which channels each risk tier gets" sub="Risk comes from the Portfolio model (bureau score, days late, payment history), worked out from this campaign's audience. Untick a channel to keep it away from a tier.">
+        {!picked.length ? <p className="text-[13px] text-muted">Pick the campaign&apos;s channels above first.</p> : !tiers ? <Loading rows={1} /> : (
           <div className="grid gap-3 lg:grid-cols-3">
             {TIERS.map((t) => (
               <section key={t} className="rounded-lg border border-line p-3">
@@ -72,17 +99,17 @@ export function ChannelsByRisk({ c, editable, set, tiers, connectors }: {
                   <span className="text-[12px] text-muted num">{num(tiers[t])} · {total ? ((tiers[t] / total) * 100).toFixed(0) : 0}%</span>
                 </div>
                 <fieldset disabled={!editable} className="mt-3 flex flex-wrap gap-1.5" aria-label={`Channels for ${t.toLowerCase()} risk`}>
-                  {CHANNELS.map((k) => {
+                  {picked.map((k) => {
                     const on = chosen(t).includes(k);
                     return (
-                      <button key={k} type="button" aria-pressed={on} onClick={() => toggle(t, k)}
+                      <button key={k} type="button" aria-pressed={on} onClick={() => toggleTier(t, k)}
                         className={`rounded-full border px-2.5 py-1 text-[12.5px] ${on ? "border-brand bg-brand-soft font-medium text-brand" : "border-line bg-surface text-ink-2 hover:border-line-strong"}`}>
-                        {stepDef(k).title}
+                        {CHANNEL_INFO[k].title}
                       </button>
                     );
                   })}
                 </fieldset>
-                <p className="mt-2 text-[12px] text-muted">{chosen(t).length ? `${chosen(t).length} channel${chosen(t).length === 1 ? "" : "s"} chosen.` : tiers[t] ? "None chosen: these borrowers won\u2019t be contacted." : "No borrowers in this tier."}</p>
+                <p className="mt-2 text-[12px] text-muted">{chosen(t).length ? `${chosen(t).length} of ${picked.length} channel${picked.length === 1 ? "" : "s"}.` : tiers[t] ? "None: these borrowers won\u2019t be contacted." : "No borrowers in this tier."}</p>
                 <details className="mt-2 text-[12px] text-muted">
                   <summary className="cursor-pointer select-none">What usually works for this tier</summary>
                   <p className="mt-1">{TIER_PLAYBOOK[t].channels}. {TIER_PLAYBOOK[t].approach}</p>
@@ -91,19 +118,7 @@ export function ChannelsByRisk({ c, editable, set, tiers, connectors }: {
             ))}
           </div>
         )}
-        <p className="mt-3 text-[12px] text-muted">Counts follow the audience you set in the previous step.</p>
-      </Card>
-      <Card title="Channels in this campaign">
-        {inUse.length ? (
-          <ul className="divide-y divide-line text-[13px]">
-            {inUse.map((k) => (
-              <li key={k} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                <span><span className="font-medium">{stepDef(k).title}</span><span className="text-muted"> · {TIERS.filter((t) => chosen(t).includes(k)).map((t) => `${t.toLowerCase()} risk`).join(", ")}</span></span>
-                <span className={`rounded px-1.5 py-0.5 text-[11.5px] font-medium ${status(k) === "Connected" ? "bg-good-soft text-good" : "bg-warn-soft text-warn"}`}>{status(k) === "Connected" ? "Connected" : `${status(k)}: set it up under Integrations`}</span>
-              </li>
-            ))}
-          </ul>
-        ) : <p className="text-[13px] text-muted">No channels chosen yet. Pick at least one for a tier above.</p>}
+        {picked.length > 0 && <p className="mt-3 text-[12px] text-muted">Counts follow the audience you set in the previous step.</p>}
       </Card>
     </div>
   );
@@ -114,7 +129,7 @@ export function AgentStep({ c, editable, set, prompts }: {
   c: CampaignLike; editable: boolean; set: (p: Partial<CampaignLike>) => void;
   prompts: { id: string; client: string; product: string; tone: string; version: number }[];
 }) {
-  if (!usesVoice(c)) return <Card><Empty title="No voice agent needed">This campaign doesn&apos;t use AI voice or IVR calls. Add one of them in Channels or the Workflow, then choose its agent here.</Empty></Card>;
+  if (!usesVoice(c)) return <Card><Empty title="No voice agent needed">This campaign doesn&apos;t use AI voice or IVR. Add one of them in Channels, then choose its agent here.</Empty></Card>;
   const prompt = prompts.find((p) => p.id === c.promptId);
   return (
     <Card title="Voice agent" sub="Chosen once the audience and workflow are set. An agent is a published prompt version, plus the voice for each borrower's language, plus its tools.">
