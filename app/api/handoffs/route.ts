@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
+import { deskScope, inDesk } from "@/lib/calldesk";
 import { handoffList } from "@/lib/handoffs";
 import { audit, saveStore } from "@/lib/store";
 
 export async function GET() {
   const a = await requireUser(undefined, "handoffs");
   if ("res" in a) return a.res;
-  return NextResponse.json({ items: handoffList(a.store, a.user.username) });
+  const scope = deskScope(a.store, a.user);
+  return NextResponse.json({ items: handoffList(a.store, a.user.username).filter((x) => inDesk(scope, x.borrowerId)) });
 }
 
 // { borrowerId, action: "cold" | "hot" | "accept" | "resolve", via?: "WhatsApp" | "CRM", outcome? }
@@ -16,7 +18,7 @@ export async function POST(req: Request) {
   const { store, user } = a;
   const { borrowerId, action, via, outcome } = await req.json().catch(() => ({}));
   const b = store.borrowers.find((x) => x.id === borrowerId && x.disposition === "Escalated");
-  if (!b) return bad("Not in the escalation queue", 404);
+  if (!b || !inDesk(deskScope(store, user), b.id)) return bad("Not in the escalation queue", 404);
   const h = (store.handoffs[b.id] ??= { status: "Waiting" });
   const now = new Date().toISOString();
   if (action === "cold") Object.assign(h, { mode: "cold", status: "With telecaller", owner: user.username, summarySentVia: undefined });
@@ -32,5 +34,6 @@ export async function POST(req: Request) {
   h.updatedAt = now;
   audit(store, user, `handoff_${action}`, b.loanId, action === "hot" ? `AI summary via ${via}` : action === "resolve" ? h.outcome ?? "" : "");
   saveStore(store);
-  return NextResponse.json({ items: handoffList(store, user.username) });
+  const scope = deskScope(store, user);
+  return NextResponse.json({ items: handoffList(store, user.username).filter((x) => inDesk(scope, x.borrowerId)) });
 }

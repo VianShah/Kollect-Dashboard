@@ -114,7 +114,7 @@ export function advanceCampaigns(s: Store, now = Date.now()) {
   }
 }
 
-function creditCampaigns(s: Store, borrowerId: string, connected: boolean, cls: Disposition, amount: number) {
+export function creditCampaigns(s: Store, borrowerId: string, connected: boolean, cls: Disposition, amount: number) {
   for (const c of s.campaigns) {
     if (c.status !== "Running" || !c.members.includes(borrowerId)) continue;
     c.stats.attempts++;

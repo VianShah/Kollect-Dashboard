@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { can } from "@/lib/auth";
-import { CHANNELS, CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, TIER_KEYS, audienceOf, audienceSummary, blankAudience, campaignDetail, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
+import { CHANNELS, CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, TIER_KEYS, workflowFromChannels, audienceOf, audienceSummary, blankAudience, campaignDetail, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
 import { riskScore, tierOf, type RiskTier } from "@/lib/portfolio";
+import { usesTelecaller } from "@/lib/calldesk";
 import { audit, saveStore } from "@/lib/store";
 import { DAY } from "@/lib/time";
 import type { Campaign, CampaignAudience, ChannelKind, StepEdge, StepKind, StepNode, Store, TierKey } from "@/lib/types";
@@ -78,21 +79,46 @@ export async function GET(req: Request) {
   const id = new URL(req.url).searchParams.get("id");
   if (id) {
     const c = store.campaigns.find((x) => x.id === id);
-    if (!c) return bad("Campaign not found", 404);
+    if (!c || (a.user.role === "telecaller" && !usesTelecaller(c))) return bad("Campaign not found", 404);
     const tiers = tierCounts(store, c.audience);
     return NextResponse.json({ detail: campaignDetail(store, c), plan: { tiers, accounts: tiers.High + tiers.Medium + tiers.Low } });
   }
   return NextResponse.json({
     prompts: store.prompts.filter((p) => p.status === "Published").map((p) => ({ id: p.id, client: p.client, product: p.product, tone: p.tone, version: p.current })),
     companies: store.portfolios,
-    campaigns: store.campaigns.map((c) => view(store, c)),
+    // Telecallers only see the campaigns they're a channel in.
+    campaigns: store.campaigns.filter((c) => a.user.role !== "telecaller" || usesTelecaller(c)).map((c) => view(store, c)),
     connectors: store.connectors.map(maskConnector),
     agents: store.agents.filter((x) => x.channel === "AI Voice" || x.channel === "IVR").map((x) => ({ code: x.code, name: x.name, channel: x.channel, language: x.language, product: x.product })),
     options: { products: store.products, portfolios: store.portfolios, languages: store.languages },
   });
 }
 
-// { create: { name, from: "starter" | "blank" } } | { import: Campaign-like } | { preview: audience } | { id, action }
+/**
+ * A fully filled-in demo campaign: the product with the most open accounts, 1–90 days past due, all four channels
+ * split across risk tiers, a workflow built from them, a published voice prompt and a seven-day run starting now.
+ * Everything stays editable before launch.
+ */
+function demoSetup(s: Store) {
+  const open = s.borrowers.filter((b) => b.disposition !== "Paid" && b.disposition !== "Dispute");
+  const counts = new Map<string, number>();
+  for (const b of open) counts.set(b.product, (counts.get(b.product) ?? 0) + 1);
+  const product = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? s.products[0];
+  const channels: ChannelKind[] = ["telecaller", "whatsapp", "voice", "ivr"];
+  const prompt = s.prompts.find((p) => p.status === "Published" && p.product === product) ?? s.prompts.find((p) => p.status === "Published");
+  const day = new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
+  return {
+    name: `${product} recovery · ${day}`,
+    goal: `Collect from ${product} borrowers 1–90 days overdue: messages first, calls in the evening, people for the hardest cases.`,
+    audience: { ...blankAudience(), products: [product], minDpd: 1, maxDpd: 90 },
+    channels,
+    tierChannels: { High: ["telecaller", "voice"], Medium: ["voice", "whatsapp"], Low: ["whatsapp", "ivr"] } as Record<TierKey, ChannelKind[]>,
+    flow: workflowFromChannels(channels),
+    promptId: prompt?.id,
+  };
+}
+
+// { create: { name, from: "demo" | "starter" | "blank" } } | { import: Campaign-like } | { preview: audience } | { id, action }
 export async function POST(req: Request) {
   const a = await requireUser(undefined, "campaigns");
   if ("res" in a) return a.res;
@@ -108,6 +134,7 @@ export async function POST(req: Request) {
       : starterWorkflow();
     if (typeof flow === "string") return bad(flow);
     const now = Date.now();
+    const demo = body.create?.from === "demo" ? demoSetup(store) : null;
     const c: Campaign = {
       id: `C${++store.campaignSeq}`, name: str(body.import ? src.name : body.create.name, 80) || "Untitled campaign", goal: str(src.goal, 200),
       company: store.portfolios.includes(src.company) ? src.company : "All companies", target: num(src.target, 0, 1e10, 0),
@@ -119,8 +146,12 @@ export async function POST(req: Request) {
       salaryWeekBoost: src.salaryWeekBoost !== false, dailyCap: num(src.dailyCap, 1, store.compliance.maxPerDay, store.compliance.maxPerDay),
       members: [], stats: { reached: 0, attempts: 0, promises: 0, paid: 0, collected: 0 }, createdBy: user.username, updatedAt: new Date(now).toISOString(),
     };
+    if (demo) {
+      Object.assign(c, { name: demo.name, goal: demo.goal, audience: demo.audience, channels: demo.channels, tierChannels: demo.tierChannels,
+        nodes: demo.flow.nodes, edges: demo.flow.edges, promptId: demo.promptId, startAt: new Date(now).toISOString(), endAt: new Date(now + 7 * DAY).toISOString() });
+    }
     store.campaigns.unshift(c);
-    audit(store, user, body.import ? "campaign_import" : "campaign_create", c.id, c.name);
+    audit(store, user, body.import ? "campaign_import" : demo ? "campaign_create_demo" : "campaign_create", c.id, c.name);
     saveStore(store);
     return NextResponse.json({ campaign: view(store, c) });
   }

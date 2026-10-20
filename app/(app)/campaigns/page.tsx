@@ -74,7 +74,8 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
           <div className="flex flex-wrap gap-2">
             <input ref={file} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ""; }} />
             <button className="btn" onClick={() => file.current?.click()}><Upload size={14} aria-hidden="true" />Import config</button>
-            <button className="btn btn-primary" onClick={() => act({ create: { name: "New campaign", from: "blank" } }, "Draft created.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />New campaign</button>
+            <button className="btn" onClick={() => act({ create: { name: "New campaign", from: "blank" } }, "Empty draft created.").then((r) => r.ok && onOpen(r.json.campaign.id))}>Start empty</button>
+            <button className="btn btn-primary" onClick={() => act({ create: { name: "New campaign", from: "demo" } }, "Demo campaign created with every step filled in. Review it, then launch.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />New campaign</button>
           </div>) : undefined}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">

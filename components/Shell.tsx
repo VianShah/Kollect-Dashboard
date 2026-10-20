@@ -3,8 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, Megaphone, PanelLeftClose, PanelLeftOpen, PieChart, PhoneForwarded, LibraryBig,
-} from "lucide-react";
+  LayoutDashboard, BarChart3, Users, Radio, ShieldCheck, Gauge, Database, LogOut, CalendarDays, Scale, FlaskConical, Menu, X, MessageSquareWarning, Megaphone, PanelLeftClose, PanelLeftOpen, PieChart, PhoneForwarded, LibraryBig, Headset } from "lucide-react";
 import { ACCESS, MODULES, ROLE_LABEL, can, type ModuleGroup, type ModuleKey } from "@/lib/roles";
 import type { Filters } from "@/lib/types";
 import type { SessionUser } from "@/lib/auth";
@@ -14,7 +13,7 @@ import Notifications from "./Notifications";
 import BorrowerDrawer from "./BorrowerDrawer";
 
 const ICONS: Record<ModuleKey, typeof LayoutDashboard> = {
-  portfolio: PieChart, home: LayoutDashboard, performance: BarChart3, campaigns: Megaphone, borrowers: Users, handoffs: PhoneForwarded, followups: CalendarDays,
+  portfolio: PieChart, home: LayoutDashboard, performance: BarChart3, campaigns: Megaphone, borrowers: Users, handoffs: PhoneForwarded, followups: CalendarDays, calldesk: Headset,
   channels: Radio, audit: ShieldCheck, compliance: Scale, grievances: MessageSquareWarning, usage: Gauge, prompts: LibraryBig, data: Database,
 };
 const GROUPS: ModuleGroup[] = ["Plan", "Monitor", "Act", "Assure", "Studio", "Setup"];

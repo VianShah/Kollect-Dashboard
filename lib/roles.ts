@@ -2,7 +2,7 @@ import type { Role } from "./types";
 
 export type ModuleKey =
   | "home" | "portfolio" | "performance" | "channels" | "campaigns" | "borrowers" | "followups" | "handoffs"
-  | "audit" | "compliance" | "grievances" | "usage" | "prompts" | "data";
+  | "calldesk" | "audit" | "compliance" | "grievances" | "usage" | "prompts" | "data";
 export type ModuleGroup = "Plan" | "Monitor" | "Act" | "Assure" | "Studio" | "Setup";
 
 export const MODULES: { key: ModuleKey; label: string; href: string; group: ModuleGroup; filters: boolean }[] = [
@@ -14,6 +14,7 @@ export const MODULES: { key: ModuleKey; label: string; href: string; group: Modu
   { key: "borrowers", label: "Accounts", href: "/borrowers", group: "Act", filters: true },
   { key: "handoffs", label: "Escalations", href: "/handoffs", group: "Act", filters: false },
   { key: "followups", label: "Call-backs", href: "/followups", group: "Act", filters: true },
+  { key: "calldesk", label: "Call desk", href: "/calldesk", group: "Act", filters: false },
   { key: "audit", label: "Conversations", href: "/audit", group: "Assure", filters: true },
   { key: "compliance", label: "Compliance", href: "/compliance", group: "Assure", filters: true },
   { key: "grievances", label: "Grievances", href: "/grievances", group: "Assure", filters: false },
@@ -26,8 +27,8 @@ export const MODULES: { key: ModuleKey; label: string; href: string; group: Modu
 export const ACCESS: Record<Role, ModuleKey[]> = {
   superadmin: MODULES.map((m) => m.key),
   manager: ["portfolio", "home", "performance", "channels", "campaigns", "compliance", "usage"],
-  supervisor: ["home", "performance", "channels", "campaigns", "borrowers", "handoffs", "followups", "audit", "compliance", "grievances", "usage"],
-  telecaller: ["home", "campaigns", "channels", "borrowers", "handoffs", "followups", "audit"],
+  supervisor: ["home", "performance", "channels", "campaigns", "borrowers", "handoffs", "followups", "calldesk", "audit", "compliance", "grievances", "usage"],
+  telecaller: ["calldesk", "home", "campaigns", "channels", "borrowers", "handoffs", "followups", "audit"],
   client: ["home", "performance", "compliance", "usage"],
 };
 

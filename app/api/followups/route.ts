@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { bad, filtersFrom, requireUser } from "@/lib/api";
+import { deskScope, inDesk } from "@/lib/calldesk";
 import { computeFollowUps } from "@/lib/metrics";
 import { windowOpen } from "@/lib/contact";
 import { audit, saveStore } from "@/lib/store";
@@ -11,7 +12,13 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const month = url.searchParams.get("month") ?? istDay(Date.now()).slice(0, 7);
   if (!/^\d{4}-\d{2}$/.test(month)) return bad("month must be YYYY-MM");
-  return NextResponse.json(computeFollowUps(a.store, filtersFrom(url), a.scope, month));
+  const r = computeFollowUps(a.store, filtersFrom(url), a.scope, month);
+  const desk = deskScope(a.store, a.user);
+  if (!desk) return NextResponse.json(r);
+  // Telecallers only see call-backs for borrowers in campaigns that use telecallers.
+  const items = r.items.filter((f) => inDesk(desk, f.borrowerId));
+  return NextResponse.json({ ...r, items, upcoming: r.upcoming.filter((f) => inDesk(desk, f.borrowerId)),
+    counts: { scheduled: items.filter((x) => x.status === "Scheduled").length, done: items.filter((x) => x.status === "Done").length, missed: items.filter((x) => x.status === "Missed").length } });
 }
 
 // Create: { borrowerId, at (ISO), note }   Update: { id, status }
