@@ -1,11 +1,29 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { can } from "@/lib/auth";
-import { CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, audienceOf, audienceSummary, blankAudience, campaignDetail, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
+import { CHANNELS, CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, TIER_KEYS, audienceOf, audienceSummary, blankAudience, campaignDetail, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
 import { riskScore, tierOf, type RiskTier } from "@/lib/portfolio";
 import { audit, saveStore } from "@/lib/store";
 import { DAY } from "@/lib/time";
-import type { Campaign, CampaignAudience, StepEdge, StepKind, StepNode, Store } from "@/lib/types";
+import type { Campaign, CampaignAudience, ChannelKind, StepEdge, StepKind, StepNode, Store, TierKey } from "@/lib/types";
+
+/** How many contactable (undisputed) borrowers in an audience fall in each risk tier. */
+function tierCounts(s: Store, a: CampaignAudience) {
+  const tiers = { High: 0, Medium: 0, Low: 0 } as Record<RiskTier, number>;
+  for (const b of audienceOf(s, a)) if (b.disposition !== "Dispute") tiers[tierOf(riskScore(b))]++;
+  return tiers;
+}
+
+/** Only known channels, per known tier, no duplicates. */
+function cleanTierChannels(v: unknown): Campaign["tierChannels"] {
+  const out: Partial<Record<TierKey, ChannelKind[]>> = {};
+  if (!v || typeof v !== "object") return out;
+  for (const t of TIER_KEYS) {
+    const list = (v as Record<string, unknown>)[t];
+    if (Array.isArray(list)) out[t] = CHANNELS.filter((k) => list.includes(k));
+  }
+  return out;
+}
 
 const KINDS = STEP_DEFS.map((s) => s.kind);
 const EDITABLE: Campaign["status"][] = ["Draft", "Scheduled", "Paused"];
@@ -59,10 +77,8 @@ export async function GET(req: Request) {
   if (id) {
     const c = store.campaigns.find((x) => x.id === id);
     if (!c) return bad("Campaign not found", 404);
-    const plan = audienceOf(store, c.audience).filter((b) => b.disposition !== "Dispute");
-    const tiers = { High: 0, Medium: 0, Low: 0 } as Record<RiskTier, number>;
-    for (const b of plan) tiers[tierOf(riskScore(b))]++;
-    return NextResponse.json({ detail: campaignDetail(store, c), plan: { tiers, accounts: plan.length } });
+    const tiers = tierCounts(store, c.audience);
+    return NextResponse.json({ detail: campaignDetail(store, c), plan: { tiers, accounts: tiers.High + tiers.Medium + tiers.Low } });
   }
   return NextResponse.json({
     prompts: store.prompts.filter((p) => p.status === "Published").map((p) => ({ id: p.id, client: p.client, product: p.product, tone: p.tone, version: p.current })),
@@ -80,7 +96,7 @@ export async function POST(req: Request) {
   if ("res" in a) return a.res;
   const { store, user } = a;
   const body = await req.json().catch(() => ({}));
-  if (body.preview) return NextResponse.json(audienceSummary(store, cleanAudience(body.preview)));
+  if (body.preview) { const aud = cleanAudience(body.preview); return NextResponse.json({ ...audienceSummary(store, aud), tiers: tierCounts(store, aud) }); }
   if (!can(user, "manageCampaigns")) return bad("Only Super Admins and supervisors can change campaigns", 403);
 
   if (body.create || body.import) {
@@ -94,6 +110,7 @@ export async function POST(req: Request) {
       id: `C${++store.campaignSeq}`, name: str(body.import ? src.name : body.create.name, 80) || "Untitled campaign", goal: str(src.goal, 200),
       company: store.portfolios.includes(src.company) ? src.company : "All companies", target: num(src.target, 0, 1e10, 0),
       promptId: store.prompts.find((p) => p.id === src.promptId && p.status === "Published")?.id,
+      tierChannels: cleanTierChannels(src.tierChannels),
       status: "Draft", audience: cleanAudience(src.audience), nodes: flow.nodes, edges: flow.edges,
       startAt: new Date(now + DAY).toISOString(), endAt: new Date(now + 8 * DAY).toISOString(),
       salaryWeekBoost: src.salaryWeekBoost !== false, dailyCap: num(src.dailyCap, 1, store.compliance.maxPerDay, store.compliance.maxPerDay),
@@ -109,10 +126,10 @@ export async function POST(req: Request) {
   if (!c) return bad("Campaign not found", 404);
   const now = Date.now();
   switch (body.action) {
-    case "check": return NextResponse.json(checkCampaign(store, c));
+    case "check": return NextResponse.json(checkCampaign(store, c, tierCounts(store, c.audience)));
     case "launch": {
       if (!EDITABLE.includes(c.status)) return bad(`A ${c.status.toLowerCase()} campaign can't be launched`);
-      const result = checkCampaign(store, c);
+      const result = checkCampaign(store, c, tierCounts(store, c.audience));
       if (result.errors.length) return NextResponse.json({ error: "Fix these before launching", ...result }, { status: 422 });
       const startNow = Date.parse(c.startAt) <= now;
       c.status = startNow ? "Running" : "Scheduled";
@@ -162,6 +179,7 @@ export async function PATCH(req: Request) {
     c.promptId = body.promptId || undefined;
   }
   if (body.audience) c.audience = cleanAudience(body.audience);
+  if (body.tierChannels !== undefined) c.tierChannels = cleanTierChannels(body.tierChannels);
   if (body.nodes || body.edges) {
     const flow = cleanFlow(body.nodes ?? c.nodes, body.edges ?? c.edges);
     if (typeof flow === "string") return bad(flow);

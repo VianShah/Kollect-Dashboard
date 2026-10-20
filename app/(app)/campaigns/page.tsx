@@ -6,8 +6,8 @@ import { useApp } from "@/components/ctx";
 import { post, useApi } from "@/components/useApi";
 import { Badge, Card, Empty, ErrorNote, Kpi, Loading, Tabs } from "@/components/ui";
 import type { AgentOption } from "@/components/WorkflowCanvas";
-import { After, During, GoalAndAgent, StageBar, stageFor, type Stage } from "@/components/CampaignStages";
-import { CONNECTOR_DEFS, stepDef } from "@/lib/campaigns";
+import { After, AgentStep, ChannelsByRisk, During, StageBar, stageFor, type Stage } from "@/components/CampaignStages";
+import { CONNECTOR_DEFS, channelsInUse, stepDef, workflowFromChannels } from "@/lib/campaigns";
 import { can } from "@/lib/roles";
 import { d, inr, num } from "@/lib/format";
 import type { Campaign, CampaignAudience, Connector, StepEdge, StepNode } from "@/lib/types";
@@ -18,7 +18,7 @@ const WorkflowCanvas = dynamic(() => import("@/components/WorkflowCanvas"), { ss
 type CampaignView = Omit<Campaign, "members"> & { memberCount: number; audienceSize: number };
 interface PromptOption { id: string; client: string; product: string; tone: string; version: number }
 interface Data { campaigns: CampaignView[]; connectors: Connector[]; agents: AgentOption[]; prompts: PromptOption[]; companies: string[]; options: { products: string[]; portfolios: string[]; languages: string[] } }
-interface Check { errors: string[]; warnings: string[]; audience: { total: number; eligible: number; outstanding: number; excluded: { disputed: number; doNotCall: number; noWhatsApp: number }; unmatched: number } }
+interface Check { errors: string[]; warnings: string[]; audience: { total: number; eligible: number; outstanding: number; excluded: { disputed: number; doNotCall: number; noWhatsApp: number }; unmatched: number; tiers?: Record<"High" | "Medium" | "Low", number> } }
 
 const SEGMENTS = ["Pre Due", "Post Due (0–30)", "Post Due (30–90)", "Post Due (90+)"];
 const channelsOf = (c: { nodes: StepNode[] }) => [...new Set(c.nodes.filter((n) => !["start", "end", "wait", "branch"].includes(n.kind)).map((n) => stepDef(n.kind).title))];
@@ -74,8 +74,7 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
           <div className="flex flex-wrap gap-2">
             <input ref={file} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ""; }} />
             <button className="btn" onClick={() => file.current?.click()}><Upload size={14} aria-hidden="true" />Import config</button>
-            <button className="btn" onClick={() => act({ create: { name: "Untitled campaign", from: "blank" } }, "Blank draft created.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />Blank</button>
-            <button className="btn btn-primary" onClick={() => act({ create: { name: "New campaign", from: "starter" } }, "Draft created from the recommended flow.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />New campaign</button>
+            <button className="btn btn-primary" onClick={() => act({ create: { name: "New campaign", from: "blank" } }, "Draft created.").then((r) => r.ok && onOpen(r.json.campaign.id))}><Plus size={14} aria-hidden="true" />New campaign</button>
           </div>) : undefined}>
         <div className="overflow-x-auto">
           <table className="table w-full whitespace-nowrap">
@@ -104,7 +103,7 @@ function List({ data, canManage, onOpen, reload }: { data: Data; canManage: bool
               ))}
             </tbody>
           </table>
-          {!data.campaigns.length && <Empty title="No campaigns yet">Create one from the recommended flow to get started.</Empty>}
+          {!data.campaigns.length && <Empty title="No campaigns yet">Create one to get started: choose who to reach, then the channels for each risk tier.</Empty>}
         </div>
         {msg && <p className="px-4 pb-3 text-[12.5px] text-ink-2" role="status">{msg}</p>}
       </Card>
@@ -130,7 +129,8 @@ function Chips({ label, options, value, onChange, disabled }: { label: string; o
 function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; data: Data; onBack: () => void; onSaved: (c: CampaignView) => void }) {
   const { user } = useApp();
   const editable = can(user.role, "manageCampaigns") && ["Draft", "Scheduled", "Paused"].includes(campaign.status);
-  const [step, setStep] = useState<"Goal & agent" | "Workflow" | "Audience" | "Schedule" | "Review & launch">("Goal & agent");
+  const [step, setStep] = useState<"Audience" | "Channels" | "Workflow" | "Agent" | "Schedule" | "Review & launch">("Audience");
+  const [flowKey, setFlowKey] = useState(0); // remounts the canvas after "Build from chosen channels"
   const [stage, setStage] = useState<Stage>(stageFor(campaign.status));
   const [c, setC] = useState(campaign);
   const [dirty, setDirty] = useState(false);
@@ -152,7 +152,7 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
   }, [c.audience]);
 
   async function save() {
-    const r = await post("/api/campaigns", { id: c.id, name: c.name, goal: c.goal, company: c.company, target: c.target, promptId: c.promptId ?? "", audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
+    const r = await post("/api/campaigns", { id: c.id, name: c.name, promptId: c.promptId ?? "", tierChannels: c.tierChannels ?? {}, audience: c.audience, ...flowRef.current, startAt: c.startAt, endAt: c.endAt, salaryWeekBoost: c.salaryWeekBoost, dailyCap: c.dailyCap }, "PATCH");
     if (r.ok) { setC(r.json.campaign); onSaved(r.json.campaign); setDirty(false); setMsg("Saved."); } else setMsg(r.json.error ?? "Couldn't save.");
     return r.ok;
   }
@@ -177,7 +177,6 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
         {can(user.role, "manageCampaigns") && c.status === "Paused" && <button className="btn" onClick={() => action("resume", "Running again.")}><Play size={14} aria-hidden="true" />Resume</button>}
         {can(user.role, "manageCampaigns") && ["Running", "Paused", "Scheduled"].includes(c.status) && <button className="btn" onClick={() => window.confirm("Stop this campaign for good?") && action("stop", "Stopped.")}><Square size={14} aria-hidden="true" />Stop</button>}
       </div>
-      <input className="input w-full" placeholder="Goal, e.g. collect before salary is spent" value={c.goal} disabled={!editable} maxLength={200} onChange={(e) => set({ goal: e.target.value })} aria-label="Goal" />
       {msg && <p className="text-[12.5px] text-ink-2" role="status">{msg}</p>}
 
       <StageBar stage={stage} status={c.status} onChange={setStage} />
@@ -185,13 +184,35 @@ function Editor({ campaign, data, onBack, onSaved }: { campaign: CampaignView; d
       {stage === "During" && <During campaign={c} />}
       {stage === "After" && <After campaign={c} canManage={can(user.role, "manageCampaigns")} onDuplicate={async () => { const r = await post("/api/campaigns", { id: c.id, action: "duplicate" }); setMsg(r.ok ? "Copied as a new draft. Find it in the campaign list." : r.json.error ?? "Couldn't copy it."); }} />}
 
-      {stage === "Before" && <Tabs tabs={["Goal & agent", "Workflow", "Audience", "Schedule", "Review & launch"] as const} value={step} onChange={setStep} />}
+      {stage === "Before" && <Tabs tabs={["Audience", "Channels", "Workflow", "Agent", "Schedule", "Review & launch"] as const} value={step} onChange={setStep} />}
 
-      {stage === "Before" && step === "Goal & agent" && (
-        <GoalAndAgent c={c} data={data} editable={editable} set={set} />
+      {stage === "Before" && step === "Channels" && (
+        <ChannelsByRisk c={c} editable={editable} set={set} tiers={aud?.tiers} connectors={data.connectors} />
       )}
 
-      {stage === "Before" && step === "Workflow" && <WorkflowCanvas nodes={c.nodes} edges={c.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} />}
+      {stage === "Before" && step === "Workflow" && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 rounded-md bg-sunk px-3 py-2 text-[12.5px] text-ink-2">
+            <span className="min-w-0 flex-1">
+              {channelsInUse(c).length
+                ? <>Chosen channels: <b>{channelsInUse(c).map((k) => stepDef(k).title).join(", ")}</b>. Each step only runs for the risk tiers you gave that channel.</>
+                : "No channels chosen yet. Pick them for each risk tier in Channels, then build the workflow from them."}
+            </span>
+            {editable && (
+              <button className="btn" disabled={!channelsInUse(c).length} onClick={() => {
+                if (flowRef.current.nodes.length > 2 && !window.confirm("Replace the current workflow with one built from the chosen channels?")) return;
+                const wf = workflowFromChannels(channelsInUse(c));
+                flowRef.current = wf; setC((x) => ({ ...x, nodes: wf.nodes, edges: wf.edges })); setDirty(true); setFlowKey((k) => k + 1);
+              }}>Build from chosen channels</button>
+            )}
+          </div>
+          <WorkflowCanvas key={flowKey} nodes={flowRef.current.nodes} edges={flowRef.current.edges} agents={data.agents} readOnly={!editable} onChange={onFlow} />
+        </div>
+      )}
+
+      {stage === "Before" && step === "Agent" && (
+        <AgentStep c={{ ...c, nodes: flowRef.current.nodes, edges: flowRef.current.edges }} editable={editable} set={set} prompts={data.prompts} />
+      )}
 
       {stage === "Before" && step === "Audience" && (
         <div className="grid gap-4 xl:grid-cols-[1fr_300px]">

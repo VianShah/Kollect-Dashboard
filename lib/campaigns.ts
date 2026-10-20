@@ -1,4 +1,4 @@
-import type { Borrower, Campaign, CampaignAudience, Connector, ConnectorKind, StepEdge, StepKind, StepNode, Store } from "./types";
+import type { Borrower, Campaign, CampaignAudience, ChannelKind, Connector, ConnectorKind, StepEdge, StepKind, StepNode, Store, TierKey } from "./types";
 import { DAY, istDay, istHour, istMonthStart } from "./time";
 
 const monthName = (t: number) => new Date(t + 330 * 60_000).toLocaleString("en-IN", { month: "long", timeZone: "UTC" });
@@ -59,6 +59,31 @@ export const TEMPLATES = ["EMI reminder", "Payment link", "PTP reminder", "Overd
 export const SLOT_LABEL = { any: "Any time in the window", morning: "08:00–12:00", afternoon: "12:00–17:00", evening: "17:00–19:00" } as const;
 export const CONDITION_LABEL = { answered: "Answered the call", paid: "Paid", promised: "Promised to pay", replied: "Replied on WhatsApp", disputed: "Raised a dispute" } as const;
 
+/** Channels in the order a workflow built from them uses: cheapest and least intrusive first. */
+export const CHANNELS: ChannelKind[] = ["whatsapp", "sms", "ivr", "voice", "telecaller"];
+export const TIER_KEYS: TierKey[] = ["High", "Medium", "Low"];
+export const channelsInUse = (c: Pick<Campaign, "tierChannels">) => CHANNELS.filter((k) => TIER_KEYS.some((t) => c.tierChannels?.[t]?.includes(k)));
+export const usesVoice = (c: Pick<Campaign, "tierChannels" | "nodes">) =>
+  channelsInUse(c).some((k) => k === "voice" || k === "ivr") || c.nodes.some((n) => n.kind === "voice" || n.kind === "ivr");
+
+/** A simple linear workflow from the chosen channels: each one in turn with a day's wait between, then End. */
+export function workflowFromChannels(channels: ChannelKind[]): { nodes: StepNode[]; edges: StepEdge[] } {
+  const nodes: StepNode[] = [{ id: "n1", kind: "start", x: 40, y: 160, data: { label: "Start" } }];
+  const defaults: Record<ChannelKind, Partial<StepNode["data"]>> = {
+    whatsapp: { template: "Payment link", slot: "afternoon" }, sms: { template: "EMI reminder", slot: "morning" },
+    ivr: { agent: "auto", slot: "evening" }, voice: { agent: "auto", slot: "evening" }, telecaller: { seats: 2 },
+  };
+  let x = 230;
+  channels.forEach((k, i) => {
+    nodes.push({ id: `n${nodes.length + 1}`, kind: k, x, y: 150, data: { label: stepDef(k).title, ...defaults[k] } });
+    x += 200;
+    if (i < channels.length - 1) { nodes.push({ id: `n${nodes.length + 1}`, kind: "wait", x, y: 160, data: { label: "Wait 1 day", waitHours: 24 } }); x += 200; }
+  });
+  nodes.push({ id: `n${nodes.length + 1}`, kind: "end", x, y: 160, data: { label: "Done" } });
+  const edges = nodes.slice(1).map((n, i) => ({ id: `e${i + 1}`, source: nodes[i].id, target: n.id }));
+  return { nodes, edges };
+}
+
 export const blankAudience = (): CampaignAudience => ({ source: "filters", products: [], segments: [], languages: [], portfolios: [], minDpd: 0, maxDpd: 365, loanIds: [] });
 
 /** The starter flow follows what the data shows: WhatsApp link in the afternoon, voice in the evening, IVR as a fallback. */
@@ -104,7 +129,8 @@ export function audienceSummary(s: Store, a: CampaignAudience) {
 }
 
 /** Errors block launch; warnings are shown but allowed. */
-export function checkCampaign(s: Store, c: Campaign) {
+/** `tiers` is how many borrowers in the audience fall in each risk tier (computed by the caller). */
+export function checkCampaign(s: Store, c: Campaign, tiers?: Record<TierKey, number>) {
   const errors: string[] = [], warnings: string[] = [];
   const starts = c.nodes.filter((n) => n.kind === "start");
   if (starts.length !== 1) errors.push("The workflow needs exactly one Start step.");
@@ -124,9 +150,17 @@ export function checkCampaign(s: Store, c: Campaign) {
     const needs = stepDef(n.kind).needs;
     if (needs && s.connectors.find((x) => x.kind === needs)?.status !== "Connected") errors.push(`"${n.data.label}" needs the ${connectorDef(needs).title} integration connected.`);
   }
-  if (c.nodes.some((n) => n.kind === "voice") && !s.prompts.some((p) => p.id === c.promptId && p.status === "Published"))
-    errors.push("Choose a published prompt for the AI voice steps (Goal & agent).");
-  if (!c.target) warnings.push("No collection target set, so progress can't be tracked against a goal.");
+  if (usesVoice(c) && !s.prompts.some((p) => p.id === c.promptId && p.status === "Published"))
+    errors.push("Choose a published prompt for the AI voice and IVR steps (Agent).");
+  const inUse = channelsInUse(c);
+  if (!inUse.length) errors.push("Choose channels for at least one risk tier (Channels).");
+  for (const t of TIER_KEYS) {
+    const n = tiers?.[t] ?? 0;
+    if (inUse.length && n && !c.tierChannels?.[t]?.length) warnings.push(`${n} ${t.toLowerCase()}-risk borrower${n === 1 ? " has" : "s have"} no channel and won't be contacted.`);
+  }
+  for (const k of inUse) if (!c.nodes.some((n) => n.kind === k)) warnings.push(`${stepDef(k).title} is chosen for a risk tier but isn't in the workflow, so it won't run.`);
+  for (const n of c.nodes) if ((CHANNELS as string[]).includes(n.kind) && !inUse.includes(n.kind as ChannelKind))
+    warnings.push(`"${n.data.label}" won't reach anyone: no risk tier uses ${stepDef(n.kind).title}.`);
   const aud = audienceSummary(s, c.audience);
   if (!aud.eligible) errors.push("The audience is empty.");
   if (aud.excluded.disputed) warnings.push(`${aud.excluded.disputed} disputed account${aud.excluded.disputed === 1 ? "" : "s"} will be left out.`);

@@ -5,10 +5,11 @@ import { Bar, BarChart, CartesianGrid, ComposedChart, Line, ReferenceLine, Respo
 import { useApi } from "./useApi";
 import { C, Card, Empty, Kpi, Loading, axisProps, tooltipStyle } from "./ui";
 import type { campaignDetail } from "@/lib/campaigns";
-import { TIER_PLAYBOOK, type RiskTier } from "@/lib/portfolio";
+import { TIERS, TIER_PLAYBOOK, type RiskTier } from "@/lib/portfolio";
+import { CHANNELS, channelsInUse, stepDef, usesVoice } from "@/lib/campaigns";
 import { TONES } from "@/lib/prompts";
 import { d, dt, inr, num, shortDay } from "@/lib/format";
-import type { Campaign, CampaignStatus } from "@/lib/types";
+import type { Campaign, CampaignStatus, ChannelKind, Connector } from "@/lib/types";
 
 export type Stage = "Before" | "During" | "After";
 export const stageFor = (s: CampaignStatus): Stage => (s === "Running" || s === "Paused" ? "During" : s === "Completed" ? "After" : "Before");
@@ -17,7 +18,7 @@ type CampaignLike = Omit<Campaign, "members"> & { memberCount: number; audienceS
 interface DetailResponse { detail: Detail; plan: { tiers: Record<RiskTier, number>; accounts: number } }
 
 const STAGES: { key: Stage; title: string; hint: string }[] = [
-  { key: "Before", title: "Before", hint: "Goal, agent, workflow, audience, checks" },
+  { key: "Before", title: "Before", hint: "Audience, channels, workflow, agent, checks" },
   { key: "During", title: "During", hint: "Live progress, channels, escalations" },
   { key: "After", title: "After", hint: "Results, cost, learnings, report" },
 ];
@@ -44,66 +45,97 @@ function useDetail(id: string, poll?: number) {
   return useApi<DetailResponse>(`/api/campaigns?id=${id}`, () => null as unknown as DetailResponse, poll);
 }
 
-export function GoalAndAgent({ c, data, editable, set }: {
+const TIER_TONE: Record<RiskTier, string> = { High: "text-bad", Medium: "text-warn", Low: "text-good" };
+
+/** Step 2: the campaign manager picks the channels for each risk tier. Nothing is pre-selected. */
+export function ChannelsByRisk({ c, editable, set, tiers, connectors }: {
   c: CampaignLike; editable: boolean; set: (p: Partial<CampaignLike>) => void;
-  data: { prompts: { id: string; client: string; product: string; tone: string; version: number }[]; companies: string[] };
+  tiers?: Record<RiskTier, number>; connectors: Connector[];
 }) {
-  const { data: det } = useDetail(c.id);
-  const prompt = data.prompts.find((p) => p.id === c.promptId);
-  const tiers = det?.plan.tiers;
   const total = tiers ? tiers.High + tiers.Medium + tiers.Low : 0;
-  const lead = tiers ? (Object.entries(tiers) as [RiskTier, number][]).sort((a, b) => b[1] - a[1])[0][0] : undefined;
+  const chosen = (t: RiskTier) => c.tierChannels?.[t] ?? [];
+  const toggle = (t: RiskTier, k: ChannelKind) => {
+    const list = chosen(t).includes(k) ? chosen(t).filter((x) => x !== k) : [...chosen(t), k];
+    set({ tierChannels: { ...(c.tierChannels ?? {}), [t]: CHANNELS.filter((x) => list.includes(x)) } });
+  };
+  const status = (k: ChannelKind) => connectors.find((x) => x.kind === stepDef(k).needs)?.status ?? "Not connected";
+  const inUse = channelsInUse(c);
   return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <Card title="Goal" sub="What this campaign must achieve. It feeds the company's monthly goal on Portfolio & goals.">
-        <fieldset disabled={!editable} className="grid gap-3 sm:grid-cols-2">
-          <label className="text-[12px] text-muted">Company
-            <select className="input mt-1 block w-full" value={c.company} onChange={(e) => set({ company: e.target.value })}>
-              <option>All companies</option>{data.companies.map((x) => <option key={x}>{x}</option>)}
-            </select>
-          </label>
-          <label className="text-[12px] text-muted">Collection target (₹ lakh)
-            <input type="number" min={0} step={0.5} className="input mt-1 block w-full" value={(c.target / 100000).toString()} onChange={(e) => set({ target: Math.round(Number(e.target.value) * 100000) })} />
-          </label>
-        </fieldset>
-        {det && <p className="mt-3 text-[12.5px] text-muted">The audience today is {num(det.plan.accounts)} accounts. A target of {inr(c.target)} needs about {inr(det.plan.accounts ? c.target / det.plan.accounts : 0)} per account.</p>}
-        <Link href="/portfolio" className="mt-2 inline-block text-[12.5px] text-brand hover:underline">See company goals →</Link>
-      </Card>
-
-      <Card title="Voice agent" sub="An agent is a published prompt version, plus the voice for each borrower's language, plus its tools.">
-        <fieldset disabled={!editable}>
-          <label className="block text-[12px] text-muted">Prompt from the Prompt Library
-            <select className="input mt-1 block w-full" value={c.promptId ?? ""} onChange={(e) => set({ promptId: e.target.value || undefined })}>
-              <option value="">Choose a published prompt</option>
-              {data.prompts.map((p) => <option key={p.id} value={p.id}>{p.client} · {p.product} · {TONES.find((t) => t.key === p.tone)?.label} · v{p.version}</option>)}
-            </select>
-          </label>
-        </fieldset>
-        {prompt ? (
-          <dl className="mt-3 grid grid-cols-2 gap-y-1 text-[12.5px]">
-            <dt className="text-muted">Prompt</dt><dd>{prompt.client} v{prompt.version}</dd>
-            <dt className="text-muted">Tone</dt><dd>{TONES.find((t) => t.key === prompt.tone)?.label}</dd>
-            <dt className="text-muted">Voices</dt><dd>One per enabled language (Channels &amp; agents)</dd>
-            <dt className="text-muted">Tools</dt><dd>Payment link, callback, escalate, transfer, WhatsApp summary</dd>
-          </dl>
-        ) : <p className="mt-3 text-[12.5px] text-warn">No prompt chosen. AI voice steps can&apos;t run without one.</p>}
-      </Card>
-
-      <Card title="Who you're reaching, by risk" sub="From the Portfolio risk model: bureau score, days late and payment history." className="xl:col-span-2">
+    <div className="space-y-4">
+      <Card title="Channels for each risk tier" sub="Choose how each group is reached. Risk comes from the Portfolio model (bureau score, days late, payment history), worked out from this campaign's audience. Nothing is chosen for you.">
         {!tiers ? <Loading rows={1} /> : (
-          <div className="grid gap-3 md:grid-cols-3">
-            {(["High", "Medium", "Low"] as RiskTier[]).map((t) => (
-              <div key={t} className={`rounded-lg border p-3 ${t === lead ? "border-ink" : "border-line"}`}>
-                <div className="flex items-baseline justify-between"><span className="font-semibold">{t} risk</span><span className="text-[12px] text-muted num">{num(tiers[t])} · {total ? ((tiers[t] / total) * 100).toFixed(0) : 0}%</span></div>
-                <div className="mt-1 text-[12.5px] font-medium">{TIER_PLAYBOOK[t].channels}</div>
-                <div className="text-[12px] text-muted">{TIER_PLAYBOOK[t].approach}</div>
-              </div>
+          <div className="grid gap-3 lg:grid-cols-3">
+            {TIERS.map((t) => (
+              <section key={t} className="rounded-lg border border-line p-3">
+                <div className="flex items-baseline justify-between gap-2">
+                  <h3 className={`text-[14px] font-semibold ${TIER_TONE[t]}`}>{t} risk</h3>
+                  <span className="text-[12px] text-muted num">{num(tiers[t])} · {total ? ((tiers[t] / total) * 100).toFixed(0) : 0}%</span>
+                </div>
+                <fieldset disabled={!editable} className="mt-3 flex flex-wrap gap-1.5" aria-label={`Channels for ${t.toLowerCase()} risk`}>
+                  {CHANNELS.map((k) => {
+                    const on = chosen(t).includes(k);
+                    return (
+                      <button key={k} type="button" aria-pressed={on} onClick={() => toggle(t, k)}
+                        className={`rounded-full border px-2.5 py-1 text-[12.5px] ${on ? "border-brand bg-brand-soft font-medium text-brand" : "border-line bg-surface text-ink-2 hover:border-line-strong"}`}>
+                        {stepDef(k).title}
+                      </button>
+                    );
+                  })}
+                </fieldset>
+                <p className="mt-2 text-[12px] text-muted">{chosen(t).length ? `${chosen(t).length} channel${chosen(t).length === 1 ? "" : "s"} chosen.` : tiers[t] ? "None chosen: these borrowers won\u2019t be contacted." : "No borrowers in this tier."}</p>
+                <details className="mt-2 text-[12px] text-muted">
+                  <summary className="cursor-pointer select-none">What usually works for this tier</summary>
+                  <p className="mt-1">{TIER_PLAYBOOK[t].channels}. {TIER_PLAYBOOK[t].approach}</p>
+                </details>
+              </section>
             ))}
           </div>
         )}
-        {lead && <p className="mt-3 text-[12.5px]">Most of this audience is <b>{lead.toLowerCase()} risk</b>. Shape the workflow around: {TIER_PLAYBOOK[lead].channels.toLowerCase()}.</p>}
+        <p className="mt-3 text-[12px] text-muted">Counts follow the audience you set in the previous step.</p>
+      </Card>
+      <Card title="Channels in this campaign">
+        {inUse.length ? (
+          <ul className="divide-y divide-line text-[13px]">
+            {inUse.map((k) => (
+              <li key={k} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span><span className="font-medium">{stepDef(k).title}</span><span className="text-muted"> · {TIERS.filter((t) => chosen(t).includes(k)).map((t) => `${t.toLowerCase()} risk`).join(", ")}</span></span>
+                <span className={`rounded px-1.5 py-0.5 text-[11.5px] font-medium ${status(k) === "Connected" ? "bg-good-soft text-good" : "bg-warn-soft text-warn"}`}>{status(k) === "Connected" ? "Connected" : `${status(k)}: set it up under Integrations`}</span>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="text-[13px] text-muted">No channels chosen yet. Pick at least one for a tier above.</p>}
       </Card>
     </div>
+  );
+}
+
+/** Step 4: the voice agent, only needed once the workflow uses AI voice or IVR. */
+export function AgentStep({ c, editable, set, prompts }: {
+  c: CampaignLike; editable: boolean; set: (p: Partial<CampaignLike>) => void;
+  prompts: { id: string; client: string; product: string; tone: string; version: number }[];
+}) {
+  if (!usesVoice(c)) return <Card><Empty title="No voice agent needed">This campaign doesn&apos;t use AI voice or IVR calls. Add one of them in Channels or the Workflow, then choose its agent here.</Empty></Card>;
+  const prompt = prompts.find((p) => p.id === c.promptId);
+  return (
+    <Card title="Voice agent" sub="Chosen once the audience and workflow are set. An agent is a published prompt version, plus the voice for each borrower's language, plus its tools.">
+      <fieldset disabled={!editable} className="max-w-xl">
+        <label className="block text-[12px] text-muted">Prompt from the Prompt Library
+          <select className="input mt-1 block w-full" value={c.promptId ?? ""} onChange={(e) => set({ promptId: e.target.value || undefined })}>
+            <option value="">Choose a published prompt</option>
+            {prompts.map((p) => <option key={p.id} value={p.id}>{p.client} · {p.product} · {TONES.find((t) => t.key === p.tone)?.label} · v{p.version}</option>)}
+          </select>
+        </label>
+      </fieldset>
+      {prompt ? (
+        <dl className="mt-3 grid max-w-xl grid-cols-2 gap-y-1 text-[12.5px]">
+          <dt className="text-muted">Prompt</dt><dd>{prompt.client} v{prompt.version}</dd>
+          <dt className="text-muted">Tone</dt><dd>{TONES.find((t) => t.key === prompt.tone)?.label}</dd>
+          <dt className="text-muted">Voices</dt><dd>One per enabled language (Channels &amp; agents)</dd>
+          <dt className="text-muted">Tools</dt><dd>Payment link, callback, escalate, transfer, WhatsApp summary</dd>
+        </dl>
+      ) : <p className="mt-3 text-[12.5px] text-warn">No prompt chosen. AI voice and IVR steps can&apos;t run without one.</p>}
+      <p className="mt-3 text-[12px] text-muted">Need a different agent? Build and publish it in the <Link href="/prompts" className="text-brand hover:underline">Prompt Library</Link>.</p>
+    </Card>
   );
 }
 
@@ -111,27 +143,28 @@ export function During({ campaign }: { campaign: CampaignLike }) {
   const live = campaign.status === "Running" || campaign.status === "Paused";
   const { data } = useDetail(campaign.id, live ? 10000 : undefined);
   if (campaign.status === "Draft" || campaign.status === "Scheduled")
-    return <Card><Empty title={campaign.status === "Scheduled" ? `Starts ${dt(campaign.startAt)}` : "Not launched yet"}>Once it runs, this shows money collected against the target, the funnel, each channel&apos;s activity, connect rate by hour, escalations and a live feed.</Empty></Card>;
+    return <Card><Empty title={campaign.status === "Scheduled" ? `Starts ${dt(campaign.startAt)}` : "Not launched yet"}>Once it runs, this shows money collected, the funnel, each channel&apos;s activity, connect rate by hour, escalations and a live feed.</Empty></Card>;
   if (!data) return <Loading />;
   const x = data.detail;
-  const behind = x.collected < x.expectedByNow * 0.9;
+  const hasTarget = x.target > 0;
+  const behind = hasTarget && x.collected < x.expectedByNow * 0.9;
   return (
     <>
       {campaign.status === "Paused" && <p className="rounded-md border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">Paused. Nothing goes out until you resume.</p>}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Kpi label="Collected" value={inr(x.collected)} tone={behind ? "bad" : "good"} sub={`${x.attainment.toFixed(0)}% of ${inr(x.target)}`} />
-        <Kpi label="Should be at" value={inr(x.expectedByNow)} sub={`${(x.elapsedShare * 100).toFixed(0)}% of the run done`} />
+        <Kpi label="Collected" value={inr(x.collected)} tone={behind ? "bad" : "good"} sub={hasTarget ? `${x.attainment.toFixed(0)}% of ${inr(x.target)}` : `${num(x.stats.paid)} payments`} />
+        <Kpi label={hasTarget ? "Should be at" : "Run done"} value={hasTarget ? inr(x.expectedByNow) : `${(x.elapsedShare * 100).toFixed(0)}%`} sub={hasTarget ? `${(x.elapsedShare * 100).toFixed(0)}% of the run done` : "Of the scheduled days"} />
         <Kpi label="Promises" value={num(x.stats.promises)} sub={`${num(x.stats.reached)} borrowers reached`} />
         <Kpi label="Open escalations" value={num(x.escalations.filter((e) => e.status !== "Resolved").length)} sub="Waiting for or with telecallers" />
         <Kpi label="Spent so far" value={inr(x.cost)} sub={x.cost ? `₹${x.roi.toFixed(0)} back per ₹1` : ""} />
       </div>
-      <Card title="Progress to target">
+      {hasTarget && <Card title="Progress to target">
         <div className="relative h-3 rounded-full bg-sunk">
           <div className={`h-3 rounded-full ${behind ? "bg-warn" : "bg-brand"}`} style={{ width: `${Math.min(100, x.attainment)}%` }} />
           <div className="absolute top-[-4px] h-5 w-0.5 bg-ink" style={{ left: `${Math.min(100, x.elapsedShare * 100)}%` }} title="Where it should be by now" />
         </div>
         <p className="mt-2 text-[12.5px] text-muted">{behind ? "Behind pace. Consider adding an evening voice step or raising the daily cap within the rules." : "On pace for the target."}</p>
-      </Card>
+      </Card>}
       <div className="grid gap-4 xl:grid-cols-2">
         <Card title="Funnel" sub="Borrowers at each stage since launch">
           <div className="space-y-2">
@@ -198,7 +231,7 @@ function ChannelTable({ rows }: { rows: Detail["channels"] }) {
 export function After({ campaign, canManage, onDuplicate }: { campaign: CampaignLike; canManage: boolean; onDuplicate: () => void }) {
   const { data } = useDetail(campaign.id);
   if (campaign.status === "Draft" || campaign.status === "Scheduled")
-    return <Card><Empty title="No results yet">After the campaign runs, this shows collected against target, cost and return, channel and product results, what worked, and a downloadable report.</Empty></Card>;
+    return <Card><Empty title="No results yet">After the campaign runs, this shows money collected, cost and return, channel and product results, what worked, and a downloadable report.</Empty></Card>;
   if (!data) return <Loading />;
   const x = data.detail;
   const final = campaign.status === "Completed";
@@ -220,12 +253,12 @@ export function After({ campaign, canManage, onDuplicate }: { campaign: Campaign
       {!final && <p className="rounded-md bg-sunk px-3 py-2 text-[12.5px] text-ink-2">Still running: these are results so far. They become final when the campaign ends on {d(campaign.endAt)}.</p>}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Kpi label="Collected" value={inr(x.collected)} tone="good" sub={`${num(x.stats.paid)} payments`} />
-        <Kpi label="Against target" value={`${x.attainment.toFixed(0)}%`} tone={x.attainment >= 100 ? "good" : x.attainment < 80 ? "bad" : undefined} sub={`Target ${inr(x.target)}`} />
+        {x.target > 0 ? <Kpi label="Against target" value={`${x.attainment.toFixed(0)}%`} tone={x.attainment >= 100 ? "good" : x.attainment < 80 ? "bad" : undefined} sub={`Target ${inr(x.target)}`} /> : <Kpi label="Payments" value={num(x.stats.paid)} sub="Borrowers who paid during the run" />}
         <Kpi label="Cost" value={inr(x.cost)} sub={`Channels ${inr(x.cost - x.platformCost)} + platform ${inr(x.platformCost)}`} />
         <Kpi label="Return" value={`₹${x.roi.toFixed(0)} per ₹1`} sub="Collected ÷ cost" />
         <Kpi label="Promises" value={num(x.stats.promises)} sub={`${num(x.stats.reached)} borrowers reached`} />
       </div>
-      <Card title="Money collected over the run" sub="Cumulative, with the target line"
+      <Card title="Money collected over the run" sub={x.target > 0 ? "Cumulative, with the target line" : "Cumulative"}
         right={<div className="flex gap-2"><button className="btn" onClick={report}><Download size={14} aria-hidden="true" />Download report</button>{canManage && <button className="btn" onClick={onDuplicate}><Copy size={14} aria-hidden="true" />Run again as a draft</button>}</div>}>
         <ResponsiveContainer width="100%" height={240}>
           <ComposedChart data={x.daily} margin={{ left: 0 }}>
@@ -233,7 +266,7 @@ export function After({ campaign, canManage, onDuplicate }: { campaign: Campaign
             <XAxis dataKey="date" tickFormatter={shortDay} {...axisProps} minTickGap={16} />
             <YAxis {...axisProps} tickFormatter={(v) => `₹${(Number(v) / 100000).toFixed(1)}L`} />
             <Tooltip {...tooltipStyle} labelFormatter={(l) => shortDay(String(l))} formatter={(v, n) => [inr(Number(v)), n === "cumulative" ? "Collected so far" : "Calls"]} />
-            <ReferenceLine y={x.target} stroke={C.bad} strokeDasharray="4 4" label={{ value: "Target", fontSize: 11, fill: C.bad, position: "insideTopRight" }} />
+            {x.target > 0 && <ReferenceLine y={x.target} stroke={C.bad} strokeDasharray="4 4" label={{ value: "Target", fontSize: 11, fill: C.bad, position: "insideTopRight" }} />}
             <Line dataKey="cumulative" stroke={C.brand} strokeWidth={2} dot={false} isAnimationActive={false} />
           </ComposedChart>
         </ResponsiveContainer>

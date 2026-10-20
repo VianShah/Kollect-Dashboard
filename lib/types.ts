@@ -157,6 +157,10 @@ export interface StepData {
 export interface StepNode { id: string; kind: StepKind; x: number; y: number; data: StepData }
 export interface StepEdge { id: string; source: string; target: string; label?: "yes" | "no" }
 
+/** Channels a campaign manager can switch on for a risk tier. Same keys as the workflow step kinds. */
+export type ChannelKind = "whatsapp" | "sms" | "voice" | "ivr" | "telecaller";
+export type TierKey = "High" | "Medium" | "Low";
+
 export type CampaignStatus = "Draft" | "Scheduled" | "Running" | "Paused" | "Completed";
 export interface CampaignAudience {
   source: "filters" | "list";
@@ -172,6 +176,8 @@ export interface Campaign {
   company: string;      // lender the campaign runs for, or "All companies"
   target: number;       // ₹ the campaign aims to collect
   promptId?: string;    // published Prompt Library prompt the voice agents use
+  /** Channels the campaign manager chose for each risk tier. Nothing is pre-selected. */
+  tierChannels?: Partial<Record<TierKey, ChannelKind[]>>;
   status: CampaignStatus;
   audience: CampaignAudience;
   nodes: StepNode[];
