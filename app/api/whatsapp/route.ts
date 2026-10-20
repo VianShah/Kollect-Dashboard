@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
-import type { SessionUser } from "@/lib/auth";
+import { can, type SessionUser } from "@/lib/auth";
 import { audienceOf } from "@/lib/campaigns";
 import { audit, saveStore } from "@/lib/store";
 import type { Borrower, Campaign, Store, WaMessage, WaTemplate } from "@/lib/types";
@@ -32,7 +32,13 @@ function chats(s: Store) {
   }).sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, 80);
 }
 const phoneForChat = (s: Store, id: string) => waState(s).messages.map((m) => m.to).find((p) => chatId(p) === id);
+
+const MAX_JOB_ROWS = 2000;
+const fieldsOf = (b: Borrower) => Object.fromEntries(WA_FIELDS.map((f) => [f.key, fieldValue(b, f.key)]));
 import { canContact } from "@/lib/contact";
+import { dailyUsage, jobCounts, jobView, kickJobs } from "@/lib/waJobs";
+import { checkParam, doubledCurrency } from "@/lib/waValues";
+import type { WaJob, WaJobItem } from "@/lib/types";
 
 const now = () => new Date().toISOString();
 const MAX_LIVE_BATCH = 250; // Meta's current daily limit for new conversations on this number
@@ -73,6 +79,8 @@ function view(s: Store, user: SessionUser) {
     campaigns: s.campaigns.map((c) => ({ id: c.id, name: c.name, status: c.status, members: c.members.length || audienceOf(s, c.audience).filter((b) => b.disposition !== "Dispute").length })),
     recipients: st.recipients ?? [], languages: LANGUAGES,
     chats: chats(s), numbers: st.numbers ?? [], defaultPhoneNumberId: cfg.defaultPhoneNumberId,
+    jobs: (st.jobs ?? []).slice(0, 10).map((j, i) => jobView(j, i < 3)),
+    usage: (({ used, limit, remaining, freesAt, tier }) => ({ used, limit: Number.isFinite(limit) ? limit : null, remaining: Number.isFinite(remaining) ? remaining : null, freesAt, tier }))(dailyUsage(s)),
     fields: WA_FIELDS, todos: todos(s), canSend: true, user: user.username,
   };
 }
@@ -80,6 +88,7 @@ function view(s: Store, user: SessionUser) {
 export async function GET() {
   const a = await requireUser(undefined, "whatsapp");
   if ("res" in a) return a.res;
+  kickJobs(); // picks up unfinished sends after a restart
   return NextResponse.json(view(a.store, a.user));
 }
 
@@ -134,7 +143,7 @@ export async function POST(req: Request) {
   const action = String(body.action ?? "");
   const gate = ["campaignSend", "campaignPreview", "createTemplate"].includes(action) ? "manageCampaigns"
     : ["listNumbers", "setNumber"].includes(action) ? "manageConnectors"
-    : ["send", "borrower", "saveRecipient", "removeRecipient", "reply"].includes(action) ? "sendLink" : undefined;
+    : ["send", "borrower", "saveRecipient", "removeRecipient", "reply", "prepare", "startJob", "jobControl"].includes(action) ? "sendLink" : undefined;
   const a = await requireUser(gate, "whatsapp");
   if ("res" in a) return a.res;
   const { store: s, user } = a;
@@ -199,6 +208,116 @@ export async function POST(req: Request) {
     audit(s, user, msg.status === "failed" ? "wa_send_failed" : "wa_reply", borrower?.loanId ?? maskPhone(phone), spec.mode === "template" ? spec.template.name : "text");
     saveStore(s);
     return NextResponse.json({ message: { ...msg, to: maskPhone(msg.to) }, ...view(s, user) }, { status: msg.status === "failed" ? 502 : 200 });
+  }
+
+  // Who a send goes to, with borrower details for filling variables and any reason they can't be messaged.
+  if (action === "prepare") {
+    const usage = dailyUsage(s);
+    const meta = { mode: cfg.mode, testNumbers: cfg.testNumbers.map(maskPhone), usage: { used: usage.used, limit: Number.isFinite(usage.limit) ? usage.limit : null, freesAt: usage.freesAt } };
+    if (body.source === "campaign") {
+      if (!can(user, "manageCampaigns")) return bad("Only Super Admins and supervisors can message a whole campaign.", 403);
+      const c = s.campaigns.find((x) => x.id === body.campaignId);
+      if (!c) return bad("Pick a campaign.", 404);
+      const members = (c.members.length ? c.members.map((id) => s.borrowers.find((b) => b.id === id)).filter(Boolean) as Borrower[]
+        : audienceOf(s, c.audience).filter((b) => b.disposition !== "Dispute")).slice(0, MAX_JOB_ROWS);
+      return NextResponse.json({ ...meta, rows: members.map((b) => ({ key: b.id, kind: "borrower", phone: b.phone, name: b.name, loanId: b.loanId, fields: fieldsOf(b), blocked: allowed(s, b) ?? undefined })) });
+    }
+    const raw: unknown[] = Array.isArray(body.phones) ? body.phones : [];
+    if (raw.length > MAX_JOB_ROWS) return bad(`At most ${MAX_JOB_ROWS} numbers in one send. Split the list.`);
+    const seen = new Set<string>();
+    const rows = raw.map((x) => {
+      const phone = normalizePhone(String(x ?? ""));
+      if (!phone) return { key: String(x ?? ""), kind: "phone", phone: String(x ?? ""), invalid: "Not a valid phone number" };
+      if (seen.has(phone)) return { key: phone, kind: "phone", phone: `+${phone}`, invalid: "Duplicate of an earlier row" };
+      seen.add(phone);
+      const b = borrowerByPhone(s, phone);
+      return { key: phone, kind: "phone", phone: `+${phone}`, name: b?.name, loanId: b?.loanId, fields: b ? fieldsOf(b) : undefined, blocked: b && !b.waConsent ? "Opted out of WhatsApp" : undefined };
+    });
+    return NextResponse.json({ ...meta, rows });
+  }
+
+  // Final check on every row, then queue it. Nothing reaches Meta unless the template, its variable count and every value pass.
+  if (action === "startJob") {
+    const t = templateFrom(s, body.template, body.language);
+    if (!t) return bad("Pick a template. Sync templates if the list is empty.");
+    if (t.status !== "APPROVED") return bad(`"${t.name}" is ${t.status.toLowerCase()} at Meta; only approved templates can be sent.`);
+    const rowsIn: { key: string; kind: string; label?: string; body: unknown; header: unknown }[] = Array.isArray(body.rows) ? body.rows : [];
+    if (!rowsIn.length) return bad("No one to send to.");
+    if (rowsIn.length > MAX_JOB_ROWS) return bad(`At most ${MAX_JOB_ROWS} people in one send.`);
+    const campaign = body.campaignId ? s.campaigns.find((x) => x.id === body.campaignId) : undefined;
+    if (rowsIn.some((r) => r.kind === "borrower") && !can(user, "manageCampaigns")) return bad("Only Super Admins and supervisors can message a whole campaign.", 403);
+
+    const items: WaJobItem[] = [];
+    const problems: string[] = [];
+    let testRedirects = 0;
+    rowsIn.forEach((r, i) => {
+      const strs = (v: unknown) => (Array.isArray(v) ? v.map((x) => String(x ?? "").trim()) : []);
+      const bv = strs(r.body), hv = strs(r.header);
+      const row = `Row ${i + 1}`;
+      if (bv.length !== t.bodyParams.length || hv.length !== t.headerParams.length) { problems.push(`${row}: needs exactly ${t.bodyParams.length} value(s) for the body${t.headerParams.length ? ` and ${t.headerParams.length} for the header` : ""}`); return; }
+      const bad1 = [...hv, ...bv].map(checkParam).find(Boolean);
+      if (bad1) { problems.push(`${row}: ${bad1}`); return; }
+      const filled = renderTemplate(t, bv, hv);
+      if (filled.length > 1024) { problems.push(`${row}: the filled-in message is over 1,024 characters`); return; }
+      if (doubledCurrency(filled)) { problems.push(`${row}: the currency symbol would show twice`); return; }
+      if (r.kind === "borrower") {
+        const b = s.borrowers.find((x) => x.id === r.key);
+        if (!b) { problems.push(`${row}: borrower not found`); return; }
+        const why = allowed(s, b);
+        if (why) { items.push({ to: "", label: b.name, borrowerId: b.id, loanId: b.loanId, body: bv, header: hv, status: "skipped", error: why }); return; }
+        const rec = recipientFor(s, b, i);
+        if ("error" in rec) { items.push({ to: "", label: b.name, borrowerId: b.id, loanId: b.loanId, body: bv, header: hv, status: "skipped", error: rec.error }); return; }
+        if (rec.redirectedFrom) testRedirects++;
+        items.push({ to: rec.to, label: b.name, borrowerId: b.id, loanId: b.loanId, redirectedFrom: rec.redirectedFrom, body: bv, header: hv, status: "queued" });
+      } else {
+        const phone = normalizePhone(r.key);
+        if (!phone) { problems.push(`${row}: not a valid phone number`); return; }
+        const b = borrowerByPhone(s, phone);
+        const label = String(r.label ?? "").slice(0, 60) || b?.name || maskPhone(phone);
+        if (b && !b.waConsent) { items.push({ to: phone, label, borrowerId: b.id, loanId: b.loanId, body: bv, header: hv, status: "skipped", error: "Opted out of WhatsApp" }); return; }
+        items.push({ to: phone, label, borrowerId: b?.id, loanId: b?.loanId, body: bv, header: hv, status: "queued" });
+      }
+    });
+    if (problems.length) return NextResponse.json({ error: `Nothing was sent. Fix ${problems.length} row(s) first.`, problems: problems.slice(0, 50) }, { status: 422 });
+    // Test mode sends every borrower's message to our own test numbers, so keep those runs small.
+    if (cfg.mode === "test" && testRedirects > MAX_TEST_BATCH) {
+      let kept = 0;
+      for (const it of items) if (it.redirectedFrom && it.status === "queued" && ++kept > MAX_TEST_BATCH) { it.status = "skipped"; it.error = `Test mode sends at most ${MAX_TEST_BATCH} borrower messages to the test numbers`; }
+    }
+    if (!items.some((it) => it.status === "queued")) return bad("Everyone on this list is blocked or skipped. Check the reasons in the table.", 409);
+    const job: WaJob = {
+      id: `J${Date.now().toString(36)}`, createdAt: now(), by: user.username, byRole: user.role, template: t.name, language: t.language,
+      campaignId: campaign?.id, source: campaign ? `Campaign · ${campaign.name}` : String(body.source ?? "numbers"), state: "running", items,
+    };
+    (st.jobs ??= []).unshift(job);
+    if (st.jobs.length > 50) st.jobs.length = 50;
+    const c0 = jobCounts(job);
+    audit(s, user, "wa_job_start", t.name, `${job.source} · ${c0.queued} to send, ${c0.skipped} skipped · ${cfg.mode}`);
+    saveStore(s);
+    kickJobs();
+    return NextResponse.json({ jobId: job.id, ...view(s, user) });
+  }
+
+  if (action === "jobControl") {
+    const job = (st.jobs ?? []).find((j) => j.id === body.jobId);
+    if (!job) return bad("Send not found", 404);
+    if (job.by !== user.username && !can(user, "manageCampaigns")) return bad("Only the person who started this send, or a supervisor, can change it.", 403);
+    const op = String(body.op ?? "");
+    if (op === "pause" && (job.state === "running" || job.state === "waiting")) { job.state = "paused"; job.note = `Paused by ${user.username}`; }
+    else if (op === "resume" && job.state === "paused") { job.state = "running"; job.note = undefined; }
+    else if (op === "cancel" && job.state !== "done" && job.state !== "cancelled") {
+      job.state = "cancelled"; job.note = `Cancelled by ${user.username}`;
+      for (const it of job.items) if (it.status === "queued") { it.status = "skipped"; it.error = "Cancelled"; }
+    } else if (op === "retryFailed") {
+      const failed = job.items.filter((it) => it.status === "failed");
+      if (!failed.length) return bad("No failed messages to retry.");
+      for (const it of failed) { it.status = "queued"; it.error = undefined; }
+      job.state = "running"; job.note = `Retrying ${failed.length} failed`;
+    } else return bad("That isn't possible for this send right now.");
+    audit(s, user, `wa_job_${op}`, job.template, job.id);
+    saveStore(s);
+    kickJobs();
+    return NextResponse.json(view(s, user));
   }
 
   if (action === "health") {

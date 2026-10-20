@@ -6,7 +6,9 @@ import { post, useApi } from "@/components/useApi";
 import { Card, Empty, ErrorNote, Loading } from "@/components/ui";
 import { can } from "@/lib/roles";
 import type { WaMessage, WaTemplate } from "@/lib/types";
-import { guessMapping, type WaFieldKey, type WaMapping } from "@/lib/waFields";
+import type { WaFieldKey } from "@/lib/waFields";
+import WaComposer from "@/components/WaComposer";
+import WaSends, { type JobView } from "@/components/WaSends";
 
 interface Todo { title: string; detail: string; state: "blocker" | "todo" | "parked" | "done"; due?: string }
 interface View {
@@ -18,6 +20,7 @@ interface View {
   recipients: { phone: string; name?: string }[]; languages: string[];
   chats: Chat[]; numbers: { id: string; display_phone_number: string; verified_name?: string; quality_rating?: string; status?: string; code_verification_status?: string }[];
   defaultPhoneNumberId: string;
+  jobs: JobView[]; usage: { used: number; limit: number | null; remaining: number | null; freesAt: string; tier?: string };
 }
 interface ChatMsg { id: string; ts: string; direction: "in" | "out"; text: string; status: string; template?: string; error?: { code?: number; title: string; detail?: string }; by?: string }
 interface Chat {
@@ -98,9 +101,12 @@ export default function WhatsAppPanel() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
-        {can(user.role, "sendLink")
-          ? <SingleSend data={data} onSent={(v) => setData(v)} />
-          : <Card title="Send one message"><p className="text-[13px] text-muted">Your role can't send WhatsApp messages.</p></Card>}
+        <div className="min-w-0 space-y-4">
+          {can(user.role, "sendLink")
+            ? <WaComposer data={data} canCampaign={can(user.role, "manageCampaigns")} onDone={(v) => setData(v as View)} />
+            : <Card title="Send a template"><p className="text-[13px] text-muted">Your role can't send WhatsApp messages.</p></Card>}
+          <WaSends jobs={data.jobs} onChange={(v) => setData(v as View)} />
+        </div>
         <RightPanel data={data} canReply={can(user.role, "sendLink")} onChange={(v) => setData(v)} todos={
           <ul className="space-y-2">
             {data.todos.map((t) => {
@@ -126,7 +132,6 @@ export default function WhatsAppPanel() {
       </div>
 
       {can(user.role, "manageCampaigns") && <NewTemplate data={data} onDone={(v) => setData(v)} />}
-      {can(user.role, "manageCampaigns") && <CampaignSend data={data} onDone={(v) => setData(v)} />}
 
       <Templates templates={data.templates} />
       <Log messages={data.messages} openWindows={data.openWindows} reload={reload} />
@@ -335,293 +340,6 @@ function TemplatePicker({ templates, value, onChange }: { templates: WaTemplate[
   );
 }
 
-function Preview({ t, body, header }: { t?: WaTemplate; body: string[]; header: string[] }) {
-  if (!t) return null;
-  const fill = (text: string | undefined, names: string[], vals: string[]) => (text ?? "").replace(/\{\{\s*([\w]+)\s*\}\}/g, (_, k) => vals[names.indexOf(k)] || `{{${k}}}`);
-  return (
-    <div className="rounded-lg bg-[#e7f4ee] p-3 text-[13px] leading-relaxed text-ink">
-      {t.header && <div className="mb-1 font-semibold">{fill(t.header, t.headerParams, header)}</div>}
-      <div className="whitespace-pre-wrap">{fill(t.body, t.bodyParams, body)}</div>
-    </div>
-  );
-}
-
-function SingleSend({ data, onSent }: { data: View; onSent: (v: View) => void }) {
-  const [target, setTarget] = useState<"number" | "borrower">("number");
-  const [to, setTo] = useState("");
-  const [picked, setPicked] = useState<string[]>([]);
-  const [newPhone, setNewPhone] = useState("");
-  const [newName, setNewName] = useState("");
-  const [confirmMany, setConfirmMany] = useState(false);
-  const [loanId, setLoanId] = useState("");
-  const [found, setFound] = useState<{ borrower: { name: string; loanId: string; product: string; waConsent: boolean }; values: Record<string, string>; blocked: string | null; recipient: { to?: string; redirected?: boolean; error?: string } } | null>(null);
-  const [mode, setMode] = useState<"template" | "text">("template");
-  const [key, setKey] = useState("");
-  const [body, setBody] = useState<string[]>([]);
-  const [header, setHeader] = useState<string[]>([]);
-  const [text, setText] = useState("");
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [sending, setSending] = useState(false);
-  const t = data.templates.find((x) => tplKey(x) === key);
-
-  // Picking a template (or a borrower) pre-fills its variables from the borrower's details.
-  useEffect(() => {
-    if (!t) { setBody([]); setHeader([]); return; }
-    const fill = (params: string[]) => guessMapping(params).map((m) => (found && m.source === "field" ? found.values[m.key] ?? "" : ""));
-    setBody(fill(t.bodyParams)); setHeader(fill(t.headerParams));
-  }, [key, found]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function lookup() {
-    setFound(null); setMsg(null);
-    const r = await post("/api/whatsapp", { action: "borrower", loanId });
-    if (r.ok) setFound(r.json); else setMsg({ ok: false, text: r.json.error ?? "Couldn't find that borrower." });
-  }
-  // Every number this send goes to: ticked saved numbers plus anything typed (comma, space or new line between them).
-  const numbers = [...new Set([...picked, ...to.split(/[\s,;]+/).map((x) => x.replace(/\D/g, "")).filter((x) => x.length >= 10)])];
-
-  async function saveNumber() {
-    setMsg(null);
-    const r = await post("/api/whatsapp", { action: "saveRecipient", phone: newPhone, name: newName });
-    if (r.ok) {
-      onSent(r.json);
-      const saved = (r.json as View).recipients.find((x) => x.phone.slice(-10) === newPhone.replace(/\D/g, "").slice(-10));
-      if (saved) setPicked((p) => [...new Set([...p, saved.phone])]);
-      setNewPhone(""); setNewName("");
-    } else setMsg({ ok: false, text: r.json.error ?? "Couldn't save that number." });
-  }
-  async function removeNumber(phone: string) {
-    const r = await post("/api/whatsapp", { action: "removeRecipient", phone });
-    if (r.ok) { onSent(r.json); setPicked((p) => p.filter((x) => x !== phone)); }
-  }
-  async function send() {
-    setSending(true); setMsg(null); setConfirmMany(false);
-    const r = await post("/api/whatsapp", {
-      action: "send", mode, ...(target === "number" ? { to: numbers } : { loanId }),
-      ...(mode === "template" ? { template: t?.name, language: t?.language, params: body, headerParams: header } : { text }),
-    });
-    if (r.json.messages) onSent(r.json);
-    const results = r.json.results as { to: string; ok: boolean; error?: string }[] | undefined;
-    const m = r.json.message as WaMessage | undefined;
-    if (results && results.length > 1) {
-      const bad = results.filter((x) => !x.ok);
-      setMsg({ ok: !bad.length, text: `Accepted by Meta for ${results.length - bad.length} of ${results.length}.${bad.length ? ` Failed: ${bad.map((x) => `${x.to} (${x.error})`).join(", ")}.` : ""} Delivery shows in the log below.` });
-    } else setMsg(r.ok ? { ok: true, text: `Accepted by Meta (${m?.id.slice(0, 18)}…). Delivery shows in the log below once Meta reports it.` }
-      : { ok: false, text: m?.error ? `${m.error.code ?? ""} ${m.error.title}${m.error.code && ERROR_HELP[m.error.code] ? ` — ${ERROR_HELP[m.error.code]}` : ""}` : r.json.error ?? "Couldn't send." });
-    setSending(false);
-  }
-  const ready = (target === "number" ? numbers.length > 0 : !!found && !found.blocked && !found.recipient.error)
-    && (mode === "text" ? !!text.trim() : !!t && body.every(Boolean) && header.every(Boolean));
-
-  return (
-    <Card title="Send message" sub="To saved or typed WhatsApp numbers, or to a borrower by loan ID.">
-      <div className="space-y-3">
-        <div className="seg" role="group" aria-label="Send to">
-          <button type="button" aria-pressed={target === "number"} onClick={() => setTarget("number")}>Phone numbers</button>
-          <button type="button" aria-pressed={target === "borrower"} onClick={() => setTarget("borrower")}>Borrower</button>
-        </div>
-        {target === "number" ? (
-          <div className="space-y-3">
-            <div>
-              <div className="label mb-1">Saved numbers</div>
-              {data.recipients.length ? (
-                <ul className="divide-y divide-line rounded-md border border-line">
-                  {data.recipients.map((r) => (
-                    <li key={r.phone} className="flex items-center gap-2 px-3 py-1.5 text-[13px]">
-                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
-                        <input type="checkbox" checked={picked.includes(r.phone)} onChange={(e) => setPicked((p) => (e.target.checked ? [...p, r.phone] : p.filter((x) => x !== r.phone)))} />
-                        <span className="truncate">{r.name || "—"}</span>
-                        <span className="ml-auto font-mono text-[12px] text-muted num">+{r.phone}</span>
-                      </label>
-                      <button type="button" className="btn btn-ghost min-h-7 px-1.5" aria-label={`Remove ${r.name ?? r.phone}`} onClick={() => removeNumber(r.phone)}><X size={13} aria-hidden="true" /></button>
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="text-[12px] text-muted">None yet. Add one below.</p>}
-              {data.recipients.length > 1 && (
-                <div className="mt-1 flex gap-3 text-[12px]">
-                  <button type="button" className="text-brand hover:underline" onClick={() => setPicked(data.recipients.map((r) => r.phone))}>Select all</button>
-                  <button type="button" className="text-brand hover:underline" onClick={() => setPicked([])}>Clear</button>
-                </div>
-              )}
-            </div>
-            <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-              <label className="block text-[12px] text-muted">Add number
-                <input className="input mt-1 block w-full" inputMode="tel" placeholder="+91 98765 43210" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} />
-              </label>
-              <label className="block text-[12px] text-muted">Name (optional)
-                <input className="input mt-1 block w-full" placeholder="Rahul, ops team" value={newName} onChange={(e) => setNewName(e.target.value)} />
-              </label>
-              <button type="button" className="btn" disabled={newPhone.replace(/\D/g, "").length < 10} onClick={saveNumber}><Plus size={14} aria-hidden="true" />Save</button>
-            </div>
-            <label className="block text-[12px] text-muted">Or type numbers for this send only (comma or new line between them)
-              <textarea id="wa-to" className="input mt-1 block w-full" rows={2} inputMode="tel" placeholder="+91 98765 43210, +91 91234 56789" value={to} onChange={(e) => setTo(e.target.value)} />
-            </label>
-            <p className="text-[12px] text-muted">{numbers.length ? `Sending to ${numbers.length} number${numbers.length === 1 ? "" : "s"}.` : "Tick a saved number or type one."}</p>
-          </div>
-        ) : (
-          <div>
-            <label className="block text-[12px] text-muted">Loan ID
-              <div className="mt-1 flex gap-2">
-                <input id="wa-loan" className="input block w-full font-mono" placeholder="LN2024000123" value={loanId} onChange={(e) => { setLoanId(e.target.value); setFound(null); }} />
-                <button type="button" className="btn" onClick={lookup} disabled={!loanId.trim()}>Find</button>
-              </div>
-            </label>
-            {found && (
-              <p className={`mt-2 rounded-md px-3 py-2 text-[12.5px] ${found.blocked || found.recipient.error ? "bg-bad-soft text-bad" : "bg-sunk text-ink-2"}`}>
-                {found.borrower.name} · {found.borrower.product} · {found.borrower.loanId}.{" "}
-                {found.blocked ? `Can't message: ${found.blocked}.` : found.recipient.error ? found.recipient.error : found.recipient.redirected ? `Test mode: this goes to ${found.recipient.to}, not the borrower.` : `Goes to ${found.recipient.to}.`}
-              </p>
-            )}
-          </div>
-        )}
-
-        <div className="seg" role="group" aria-label="Message type">
-          <button type="button" aria-pressed={mode === "template"} onClick={() => setMode("template")}>Approved template</button>
-          <button type="button" aria-pressed={mode === "text"} onClick={() => setMode("text")}>Free text</button>
-        </div>
-
-        {mode === "template" ? (
-          <>
-            <label className="block text-[12px] text-muted">Template<TemplatePicker templates={data.templates} value={key} onChange={setKey} /></label>
-            {!data.templates.length && <p className="text-[12px] text-muted">No templates yet. Use "Sync templates" above.</p>}
-            {t && [...t.headerParams.map((p, i) => ({ p, i, h: true })), ...t.bodyParams.map((p, i) => ({ p, i, h: false }))].map(({ p, i, h }) => (
-              <label key={`${h}-${p}`} className="block text-[12px] text-muted">{h ? "Header" : "Variable"} {`{{${p}}}`}
-                <input className="input mt-1 block w-full" value={(h ? header : body)[i] ?? ""} onChange={(e) => {
-                  const next = [...(h ? header : body)]; next[i] = e.target.value; (h ? setHeader : setBody)(next);
-                }} />
-              </label>
-            ))}
-            <Preview t={t} body={body} header={header} />
-          </>
-        ) : (
-          <>
-            <textarea className="input block w-full" rows={4} maxLength={4096} placeholder="Your message" value={text} onChange={(e) => setText(e.target.value)} />
-            <p className="text-[12px] text-muted">Free text only arrives if this person messaged our WhatsApp number in the last 24 hours. {data.openWindows.length ? `Open right now: ${data.openWindows.map((w) => `${w.to} until ${when(w.until)}`).join(", ")}.` : "No one has an open window right now."}</p>
-          </>
-        )}
-
-        <div className="flex flex-wrap items-center gap-2">
-          {confirmMany ? (
-            <span className="flex flex-wrap items-center gap-2 rounded-md bg-warn-soft px-3 py-1.5 text-[12.5px] text-warn">
-              Send to {numbers.length} numbers?
-              <button className="btn btn-primary min-h-8" onClick={send}>Yes, send</button>
-              <button className="btn btn-ghost min-h-8" onClick={() => setConfirmMany(false)}>Cancel</button>
-            </span>
-          ) : (
-            <button className="btn btn-primary" disabled={!ready || sending || !data.configured} onClick={() => (target === "number" && numbers.length > 1 ? setConfirmMany(true) : send())}>
-              <Send size={14} aria-hidden="true" />{sending ? "Sending…" : target === "number" && numbers.length > 1 ? `Send to ${numbers.length}` : "Send"}
-            </button>
-          )}
-          {msg && <span className={`text-[12.5px] ${msg.ok ? "text-good" : "text-bad"}`} role="status">{msg.text}</span>}
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function MappingRow({ label, value, fields, onChange }: { label: string; value: WaMapping; fields: View["fields"]; onChange: (m: WaMapping) => void }) {
-  return (
-    <div className="grid gap-2 sm:grid-cols-[110px_1fr_1fr] sm:items-center">
-      <span className="font-mono text-[12px] text-muted">{label}</span>
-      <select className="input" value={value.source === "text" ? "__text" : value.key} onChange={(e) => onChange(e.target.value === "__text" ? { source: "text", value: "" } : { source: "field", key: e.target.value as WaFieldKey })}>
-        {fields.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
-        <option value="__text">Fixed text…</option>
-      </select>
-      {value.source === "text" ? <input className="input" placeholder="Same text for everyone" value={value.value} onChange={(e) => onChange({ source: "text", value: e.target.value })} /> : <span />}
-    </div>
-  );
-}
-
-interface CampaignPreview { campaign: string; members: number; eligible: number; willSend: number; skipped: Record<string, number>; mode: string; cap: number; testNumbers: string[]; sample: { name: string; loanId: string; text: string } | null; liveBlocked: string | null }
-
-function CampaignSend({ data, onDone }: { data: View; onDone: (v: View) => void }) {
-  const [campaignId, setCampaignId] = useState("");
-  const [key, setKey] = useState("");
-  const [mapping, setMapping] = useState<WaMapping[]>([]);
-  const [headerMapping, setHeaderMapping] = useState<WaMapping[]>([]);
-  const [limit, setLimit] = useState(data.mode === "test" ? 5 : 50);
-  const [preview, setPreview] = useState<CampaignPreview | null>(null);
-  const [confirm, setConfirm] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const t = data.templates.find((x) => tplKey(x) === key);
-  useEffect(() => { setMapping(t ? guessMapping(t.bodyParams) : []); setHeaderMapping(t ? guessMapping(t.headerParams) : []); setPreview(null); }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setPreview(null); setConfirm(false); }, [campaignId, mapping, headerMapping, limit]);
-
-  const payload = () => ({ campaignId, template: t?.name, language: t?.language, mapping, headerMapping, limit });
-  async function doPreview() {
-    setMsg(null);
-    const r = await post("/api/whatsapp", { action: "campaignPreview", ...payload() });
-    if (r.ok) setPreview(r.json.preview); else setMsg({ ok: false, text: r.json.error ?? "Couldn't preview." });
-  }
-  async function doSend() {
-    setBusy(true); setMsg(null); setConfirm(false);
-    const r = await post("/api/whatsapp", { action: "campaignSend", ...payload() });
-    if (r.json.messages) onDone(r.json);
-    if (r.ok) {
-      const errs = Object.entries(r.json.result.errors as Record<string, number>).map(([k, v]) => `${k} (${v})`).join(", ");
-      setMsg({ ok: !r.json.result.failed, text: `Sent ${r.json.result.sent}, failed ${r.json.result.failed}${errs ? `: ${errs}` : ""}. Watch the log for delivery.` });
-    } else setMsg({ ok: false, text: r.json.error ?? "Couldn't send." });
-    setBusy(false);
-  }
-  const ready = !!campaignId && !!t && t.status === "APPROVED";
-
-  return (
-    <Card title="Send to a campaign" sub={data.mode === "test"
-      ? `Test mode: each borrower's message, with their own details, goes to ${data.testNumbers.join(", ") || "the test numbers"}. Capped at 5 per send.`
-      : "Live mode: messages go to each borrower's own number, opted-in and undisputed only, inside the calling window."}>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="space-y-3">
-          <label className="block text-[12px] text-muted">Campaign
-            <select className="input mt-1 block w-full" value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
-              <option value="">Choose a campaign…</option>
-              {data.campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.status} · {c.members} borrowers</option>)}
-            </select>
-          </label>
-          <label className="block text-[12px] text-muted">Template<TemplatePicker templates={data.templates} value={key} onChange={setKey} /></label>
-          {t && (t.headerParams.length + t.bodyParams.length > 0) && (
-            <div className="space-y-2">
-              <div className="label">Fill each variable with</div>
-              {t.headerParams.map((p, i) => <MappingRow key={`h${p}`} label={`Header {{${p}}}`} value={headerMapping[i] ?? { source: "field", key: "first" }} fields={data.fields} onChange={(m) => setHeaderMapping(headerMapping.map((x, j) => (j === i ? m : x)))} />)}
-              {t.bodyParams.map((p, i) => <MappingRow key={`b${p}`} label={`{{${p}}}`} value={mapping[i] ?? { source: "field", key: "first" }} fields={data.fields} onChange={(m) => setMapping(mapping.map((x, j) => (j === i ? m : x)))} />)}
-            </div>
-          )}
-          <label className="block text-[12px] text-muted">Send to at most
-            <input type="number" min={1} max={data.mode === "test" ? 5 : 250} className="input mt-1 block w-32" value={limit} onChange={(e) => setLimit(Number(e.target.value))} />
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <button className="btn" disabled={!ready} onClick={doPreview}>Preview</button>
-            {preview && !confirm && <button className="btn btn-primary" disabled={!preview.willSend || !!preview.liveBlocked || busy} onClick={() => setConfirm(true)}><Send size={14} aria-hidden="true" />Send {preview.willSend} message{preview.willSend === 1 ? "" : "s"}</button>}
-            {confirm && preview && (
-              <span className="flex flex-wrap items-center gap-2 rounded-md bg-warn-soft px-3 py-1.5 text-[12.5px] text-warn">
-                Send {preview.willSend} WhatsApp message{preview.willSend === 1 ? "" : "s"}{data.mode === "test" ? " to the test numbers" : " to real borrowers"}?
-                <button className="btn btn-primary min-h-8" onClick={doSend}>Yes, send</button>
-                <button className="btn btn-ghost min-h-8" onClick={() => setConfirm(false)}>Cancel</button>
-              </span>
-            )}
-            {busy && <span className="text-[12.5px] text-muted">Sending, one every quarter second…</span>}
-          </div>
-          {msg && <p className={`text-[12.5px] ${msg.ok ? "text-good" : "text-bad"}`} role="status">{msg.text}</p>}
-        </div>
-        <div className="space-y-3">
-          {preview ? (
-            <>
-              <dl className="divide-y divide-line rounded-md border border-line text-[13px]">
-                {[["Borrowers in campaign", preview.members], ["Can be messaged", preview.eligible], ["Will be sent now", preview.willSend],
-                  ...Object.entries(preview.skipped).map(([k, v]) => [`Skipped: ${k.toLowerCase()}`, v])].map(([k, v]) => (
-                  <div key={String(k)} className="flex justify-between gap-3 px-3 py-2"><dt className="text-muted">{k}</dt><dd className="font-medium num">{v}</dd></div>
-                ))}
-              </dl>
-              {preview.liveBlocked && <p className="rounded-md bg-bad-soft px-3 py-2 text-[12.5px] text-bad">{preview.liveBlocked}</p>}
-              {preview.sample && <div><div className="label mb-1">First message, for {preview.sample.name} ({preview.sample.loanId})</div><div className="whitespace-pre-wrap rounded-lg bg-[#e7f4ee] p-3 text-[13px] leading-relaxed">{preview.sample.text}</div></div>}
-            </>
-          ) : <Preview t={t} body={t ? mapping.map((m) => (m.source === "text" ? m.value : `[${data.fields.find((f) => f.key === m.key)?.label}]`)) : []} header={t ? headerMapping.map((m) => (m.source === "text" ? m.value : `[${data.fields.find((f) => f.key === m.key)?.label}]`)) : []} />}
-          {!t && <p className="text-[13px] text-muted">Choose a campaign and an approved template, map the variables, then preview before sending.</p>}
-        </div>
-      </div>
-    </Card>
-  );
-}
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en_US: "English (US)", en: "English", en_GB: "English (UK)", hi: "Hindi", mr: "Marathi", gu: "Gujarati", ta: "Tamil",

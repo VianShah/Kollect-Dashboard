@@ -130,6 +130,24 @@ export interface WaState {
   numbers?: { id: string; display_phone_number: string; verified_name?: string; quality_rating?: string; status?: string; code_verification_status?: string }[];
   /** When each chat was last opened on the page, so new replies show as unread. */
   chatsReadAt?: Record<string, string>;
+  /** Template sends to many people, worked through in the background. */
+  jobs?: WaJob[];
+}
+
+export interface WaJobItem {
+  to: string;              // number actually messaged (a test number in test mode)
+  label: string;           // name or masked number, for the report
+  borrowerId?: string; loanId?: string; redirectedFrom?: string;
+  body: string[]; header: string[];
+  status: "queued" | "sent" | "failed" | "skipped";
+  error?: string; wamid?: string; at?: string;
+}
+export interface WaJob {
+  id: string; createdAt: string; by: string; byRole: Role;
+  template: string; language: string; campaignId?: string; source: string;
+  state: "running" | "paused" | "waiting" | "done" | "cancelled";
+  waitingUntil?: string; note?: string;
+  items: WaJobItem[];
 }
 
 export type GrievanceStatus = "Open" | "In progress" | "Resolved";

@@ -20,7 +20,7 @@ export type WaFieldKey = (typeof WA_FIELDS)[number]["key"];
 /** One template variable is filled either from a borrower detail or with fixed text. */
 export type WaMapping = { source: "field"; key: WaFieldKey } | { source: "text"; value: string };
 
-const inr = (n: number) => `Rs ${Math.round(n).toLocaleString("en-IN")}`;
+const inr = (n: number) => `₹${Math.round(n).toLocaleString("en-IN")}`;
 const day = (t: number) => new Date(t).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric" });
 
 export function fieldValue(b: Borrower, key: WaFieldKey, now = Date.now()): string {
