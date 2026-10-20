@@ -45,7 +45,20 @@ function drill(params: URLSearchParams) {
 }
 
 export default function BorrowersPage() {
-  return <Suspense fallback={<Loading />}><Borrowers /></Suspense>;
+  return <Suspense fallback={<Loading />}><AccountsTabs /></Suspense>;
+}
+
+/** Accounts and every conversation with them (calls, recordings, QC) in one place. */
+function AccountsTabs() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const tab = params.get("tab") === "Conversations" ? "Conversations" : "Accounts";
+  return (
+    <>
+      <Tabs tabs={["Accounts", "Conversations"] as const} value={tab} onChange={(t) => router.replace(t === "Accounts" ? "/borrowers" : "/borrowers?tab=Conversations")} />
+      {tab === "Accounts" ? <Borrowers /> : <Conversations />}
+    </>
+  );
 }
 
 function Borrowers() {
@@ -99,7 +112,8 @@ function Borrowers() {
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        {user.role !== "client" && (
+        {data.assignedOnly && <span className="rounded-md bg-sunk px-2.5 py-1.5 text-[12.5px] text-ink-2">Accounts allocated to you</span>}
+        {user.role !== "client" && !data.assignedOnly && (
           <div className="seg" role="group" aria-label="Queue">
             <button aria-pressed={mine} onClick={() => setMine(true)}>My queue</button>
             <button aria-pressed={!mine} onClick={() => setMine(false)}>All accounts</button>
