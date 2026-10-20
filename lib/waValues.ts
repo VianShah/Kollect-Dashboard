@@ -79,6 +79,17 @@ export function guessFormat(name: string, samples: string[] = []): ValueFormat {
   return "text";
 }
 
+/** Reads the template's own words just before a variable ("Date: {{2}}", "Amount: {{4}}") to pick its format. */
+export function contextFormat(text: string | undefined, param: string): ValueFormat | undefined {
+  const at = (text ?? "").search(new RegExp(`\\{\\{\\s*${param.replace(/\W/g, "")}\\s*\\}\\}`));
+  if (at < 0) return undefined;
+  const before = (text ?? "").slice(Math.max(0, at - 30), at).toLowerCase();
+  if (/(₹|rs\.?|inr)\s*$/.test(before)) return "number";
+  if (/(amount|emi|balance|outstanding|payment of|pay|dues?)\W*$/.test(before)) return "amount";
+  if (/(date|due on|due by|on|by|before|till|until)\W*$/.test(before)) return "date";
+  return undefined;
+}
+
 export interface ParsedTable { headers: string[]; rows: string[][]; phoneCol: number; nameCol: number; errors: string[] }
 
 const isPhoneLike = (s: string) => { const d = s.replace(/\D/g, ""); return d.length >= 10 && d.length <= 15; };
@@ -103,10 +114,13 @@ export function parseTable(text: string): ParsedTable {
   const first = grid[0];
   const hasHeader = !first.some(isPhoneLike);
   const width = Math.max(...grid.map((r) => r.length));
-  const headers = hasHeader ? Array.from({ length: width }, (_, i) => first[i] || `Column ${i + 1}`) : Array.from({ length: width }, (_, i) => `Column ${i + 1}`);
   const rows = (hasHeader ? grid.slice(1) : grid).map((r) => Array.from({ length: width }, (_, i) => r[i] ?? ""));
-  let phoneCol = headers.findIndex((h) => /phone|mobile|whats|number|contact|msisdn/i.test(h));
-  if (phoneCol < 0) phoneCol = headers.findIndex((_, i) => rows.length > 0 && rows.filter((r) => isPhoneLike(r[i])).length >= Math.ceil(rows.length * 0.8));
+  let phoneCol = hasHeader ? first.findIndex((h) => /phone|mobile|whats|number|contact|msisdn/i.test(h)) : -1;
+  if (phoneCol < 0) phoneCol = Array.from({ length: width }, (_, i) => i).find((i) => rows.length > 0 && rows.filter((r) => isPhoneLike(r[i])).length >= Math.ceil(rows.length * 0.8)) ?? -1;
+  // Plain pasted lines have no header: call the columns after the number Value 1, Value 2… so they read as {{1}}, {{2}}….
+  let v = 0;
+  const headers = hasHeader ? Array.from({ length: width }, (_, i) => first[i] || `Column ${i + 1}`)
+    : Array.from({ length: width }, (_, i) => (i === phoneCol ? "Phone" : `Value ${++v}`));
   const nameCol = headers.findIndex((h, i) => i !== phoneCol && /name|customer|borrower/i.test(h));
   const errors: string[] = [];
   if (phoneCol < 0) errors.push("Couldn't find a phone number column. Add a column called Phone.");

@@ -5,7 +5,7 @@ import { post } from "@/components/useApi";
 import { Card } from "@/components/ui";
 import type { WaTemplate } from "@/lib/types";
 import { WA_FIELDS, guessMapping, type WaFieldKey } from "@/lib/waFields";
-import { checkParam, doubledCurrency, formatValue, guessFormat, hasCurrencyBefore, parseTable, type ParsedTable, type ValueFormat } from "@/lib/waValues";
+import { checkParam, contextFormat, doubledCurrency, formatValue, guessFormat, hasCurrencyBefore, parseTable, type ParsedTable, type ValueFormat } from "@/lib/waValues";
 
 type Source = "numbers" | "list" | "campaign";
 interface PreparedRow { key: string; kind: "phone" | "borrower"; phone: string; name?: string; loanId?: string; fields?: Record<string, string>; blocked?: string; invalid?: string }
@@ -26,7 +26,6 @@ const memoKey = (t: WaTemplate) => `kollect.wa.cols.${t.name}.${t.language}`;
 export default function WaComposer({ data, canCampaign, onDone }: { data: ComposerData; canCampaign: boolean; onDone: (view: unknown) => void }) {
   const [source, setSource] = useState<Source>("numbers");
   const [picked, setPicked] = useState<string[]>([]);
-  const [typed, setTyped] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const [newName, setNewName] = useState("");
   const [pasted, setPasted] = useState("");
@@ -46,10 +45,22 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
 
   // Who this goes to, as phone numbers (numbers / list) — campaigns are resolved on the server.
   const phones = useMemo(() => {
-    if (source === "numbers") return [...new Set([...picked, ...typed.split(/[\s,;]+/).map((x) => x.trim()).filter((x) => x.replace(/\D/g, "").length >= 10)])];
+    if (source === "numbers") return [...new Set(picked)];
     if (source === "list" && table && table.phoneCol >= 0) return table.rows.map((r) => r[table.phoneCol]);
     return [];
-  }, [source, picked, typed, table]);
+  }, [source, picked, table]);
+
+  // Typing a number and a name adds that person to this send and saves them for next time.
+  async function addNumber() {
+    const digits = newPhone.replace(/\D/g, "");
+    if (digits.length < 10) return;
+    const x = await post("/api/whatsapp", { action: "saveRecipient", phone: newPhone, name: newName });
+    if (!x.ok) { setMsg({ ok: false, text: x.json.error ?? "That doesn't look like a phone number." }); return; }
+    onDone(x.json);
+    const saved = (x.json.recipients as { phone: string }[]).find((r) => r.phone.slice(-10) === digits.slice(-10));
+    if (saved) setPicked((p) => [...new Set([...p, saved.phone])]);
+    setNewPhone(""); setNewName(""); setMsg(null);
+  }
 
   useEffect(() => { setPrep(null); setOverrides({}); setPage(0); setConfirm(false); }, [source, phones.join("|"), campaignId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -78,6 +89,8 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
       // List columns are re-read every time; only typed values and borrower-field choices are remembered per template.
       let fmt = mode === "list" && table ? guessFormat(table.headers[listCol] ?? "", table.rows.map((r) => r[listCol] ?? ""))
         : s.format ?? (mode === "field" ? FIELD_FORMAT[field] ?? "text" : guessFormat(p));
+      // No column name to go on (plain pasted lines, or a typed value): use the template's wording around the variable.
+      if (fmt === "text" && mode !== "field") fmt = contextFormat(header ? t.header : t.body, p) ?? "text";
       // The template already prints ₹ before this variable: send the number alone so the message never shows ₹₹.
       if (hasCurrencyBefore(header ? t.header : t.body, p) && fmt === "amount") fmt = "number";
       return { param: p, header, mode, value: s.value ?? "", listCol, field, format: fmt };
@@ -149,7 +162,7 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
           <div className="label mb-1.5">1 · Who gets it</div>
           <div className="seg" role="group" aria-label="Send to">
             <button type="button" aria-pressed={source === "numbers"} onClick={() => setSource("numbers")}>Numbers</button>
-            <button type="button" aria-pressed={source === "list"} onClick={() => setSource("list")}>Paste or upload a list</button>
+            <button type="button" aria-pressed={source === "list"} onClick={() => setSource("list")}>Paste a list</button>
             {canCampaign && <button type="button" aria-pressed={source === "campaign"} onClick={() => setSource("campaign")}>A campaign</button>}
           </div>
           <div className="mt-2">
@@ -169,27 +182,26 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
                     {data.recipients.length > 1 && <button type="button" className="text-[12px] text-brand hover:underline" onClick={() => setPicked(picked.length === data.recipients.length ? [] : data.recipients.map((r) => r.phone))}>{picked.length === data.recipients.length ? "Clear" : "Select all"}</button>}
                   </div>
                 )}
-                <div className="flex flex-wrap gap-2">
-                  <input className="input w-44" inputMode="tel" placeholder="Save a number" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} aria-label="Number to save" />
-                  <input className="input w-36" placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} aria-label="Name for saved number" />
-                  <button type="button" className="btn" disabled={newPhone.replace(/\D/g, "").length < 10} onClick={async () => {
-                    const x = await post("/api/whatsapp", { action: "saveRecipient", phone: newPhone, name: newName });
-                    if (x.ok) { onDone(x.json); setNewPhone(""); setNewName(""); } else setMsg({ ok: false, text: x.json.error ?? "Couldn't save that number." });
-                  }}>Save</button>
+                <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
+                  <input className="input" inputMode="tel" placeholder="Number, e.g. 98765 43210" value={newPhone} onChange={(e) => setNewPhone(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNumber(); } }} aria-label="Number" />
+                  <input className="input" placeholder="Name (press Enter to add)" value={newName} onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNumber(); } }} onBlur={() => { if (newPhone.replace(/\D/g, "").length >= 10) addNumber(); }} aria-label="Name" />
                 </div>
-                <textarea className="input block w-full" rows={2} inputMode="tel" placeholder="+91 98765 43210, +91 91234 56789 (comma or new line between them)" value={typed} onChange={(e) => setTyped(e.target.value)} aria-label="Phone numbers" />
-                <p className="text-[12px] text-muted">{phones.length ? `${phones.length} number${phones.length === 1 ? "" : "s"}. ` : ""}Each person can still get different values: set a variable to "Type per person" below.</p>
+                <p className="text-[12px] text-muted">{phones.length ? `${phones.length} selected. ` : ""}A number you add is saved and ticked for this send. Tap a saved name to add or remove it.</p>
               </div>
             )}
             {source === "list" && (
               <div className="space-y-2">
-                <p className="text-[12px] text-muted">Paste rows from Excel or Google Sheets, or upload a CSV / Excel file. One row per person: a phone column, then a column for each value (name, date, amount…). A header row helps match columns to variables.</p>
-                <label className="btn inline-flex cursor-pointer"><FileUp size={14} aria-hidden="true" />Upload CSV or Excel
-                  <input type="file" accept=".csv,.txt,.tsv,.xlsx,.xls" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }} />
-                </label>
-                <textarea className="input block w-full font-mono text-[12px]" rows={5} placeholder={"Phone\tName\tDue date\tAmount\n9876543210\tHarshal\t21/10/2026\t20000\n9123456780\tPriya\t25/10/2026\t8,500"}
+                <p className="text-[12px] text-muted">One person per line: the number, then the template&apos;s values in order ({"{{1}}"}, {"{{2}}"}…), separated by commas. Paste it from anywhere: a note, a chat, Excel.</p>
+                <textarea className="input block w-full text-[13px]" rows={5} placeholder={"9876543210, Harshal, 21/10/2026, RBI, 20000\n9123456780, Priya, 25/10/2026, HDFC, 8500"}
                   value={pasted} onChange={(e) => { setPasted(e.target.value); setTable(e.target.value.trim() ? parseTable(e.target.value) : null); }} aria-label="Pasted list" />
-                {table && <p className={`text-[12px] ${table.errors.length ? "text-bad" : "text-muted"}`}>{table.errors.length ? table.errors.join(" ") : `${table.rows.length} rows · phone column "${table.headers[table.phoneCol]}"${table.nameCol >= 0 ? ` · name column "${table.headers[table.nameCol]}"` : ""} · other columns: ${table.headers.filter((_, i) => i !== table.phoneCol && i !== table.nameCol).join(", ") || "none"}`}</p>}
+                <div className="flex flex-wrap items-center gap-3 text-[12px]">
+                  {table && <span className={table.errors.length ? "text-bad" : "text-muted"}>{table.errors.length ? table.errors.join(" ") : `${table.rows.length} ${table.rows.length === 1 ? "person" : "people"} · ${table.headers.length - 1} value${table.headers.length === 2 ? "" : "s"} each`}</span>}
+                  <label className="cursor-pointer text-brand hover:underline"><FileUp size={12} className="mr-1 inline" aria-hidden="true" />or upload a CSV / Excel file
+                    <input type="file" accept=".csv,.txt,.tsv,.xlsx,.xls" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }} />
+                  </label>
+                </div>
               </div>
             )}
             {source === "campaign" && (
@@ -269,7 +281,7 @@ export default function WaComposer({ data, canCampaign, onDone }: { data: Compos
                     return (
                       <tr key={`${r.key}-${ri}`} className={`align-top ${previewRow === ri ? "bg-brand-soft/40" : ""}`} onClick={() => setPreviewRow(ri)}>
                         <td className="text-[12px] text-muted num">{ri + 1}</td>
-                        <td className="whitespace-nowrap text-[12.5px]"><div className="font-medium">{r.name ?? "—"}</div><div className="text-[11.5px] text-muted num">{r.phone}{r.loanId ? ` · ${r.loanId}` : ""}</div></td>
+                        <td className="whitespace-nowrap text-[12.5px]">{r.name && <div className="font-medium">{r.name}</div>}<div className={r.name ? "text-[11.5px] text-muted num" : "num"}>{r.phone}{r.loanId ? ` · ${r.loanId}` : ""}</div></td>
                         {r.values.map((v, ci) => (
                           <td key={ci} className="min-w-[130px]">
                             <input className={`input h-8 w-full text-[12.5px] ${v.error ? "border-bad/60 bg-bad-soft/40" : v.overridden ? "border-info/50" : ""}`} value={overrides[ri]?.[ci] ?? v.raw}

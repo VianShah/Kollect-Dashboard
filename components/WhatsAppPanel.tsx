@@ -55,6 +55,7 @@ export default function WhatsAppPanel() {
   const { data, error, setData, reload } = useApi<View | null>("/api/whatsapp", () => null, 5000);
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
+  const [newTpl, setNewTpl] = useState(false);
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={2} />;
 
@@ -97,8 +98,15 @@ export default function WhatsAppPanel() {
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn" disabled={!data.configured || !!busy} onClick={() => run("health", "Connection checked.")}><ShieldCheck size={14} aria-hidden="true" />{busy === "health" ? "Checking…" : "Check connection"}</button>
         <button className="btn" disabled={!data.configured || !!busy} onClick={() => run("syncTemplates", "Templates synced from Meta.")}><RefreshCw size={14} aria-hidden="true" />{busy === "syncTemplates" ? "Syncing…" : "Sync templates"}</button>
+        {can(user.role, "manageCampaigns") && (
+          <button className="btn ml-auto" aria-expanded={newTpl} onClick={() => setNewTpl(!newTpl)}>
+            <FilePlus2 size={14} aria-hidden="true" />{newTpl ? "Close new template" : "New template"}
+          </button>
+        )}
         {note && <span className="text-[12.5px] text-ink-2" role="status">{note}</span>}
       </div>
+
+      {newTpl && can(user.role, "manageCampaigns") && <NewTemplate data={data} onDone={(v) => setData(v)} />}
 
       <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
         <div className="min-w-0 space-y-4">
@@ -130,8 +138,6 @@ export default function WhatsAppPanel() {
           </ul>
         } />
       </div>
-
-      {can(user.role, "manageCampaigns") && <NewTemplate data={data} onDone={(v) => setData(v)} />}
 
       <Templates templates={data.templates} />
       <Log messages={data.messages} openWindows={data.openWindows} reload={reload} />
@@ -456,9 +462,14 @@ function NewTemplate({ data, onDone }: { data: View; onDone: (v: View) => void }
 }
 
 function Templates({ templates }: { templates: WaTemplate[] }) {
+  const approved = templates.filter((t) => t.status === "APPROVED").length;
   return (
-    <Card pad={false} title="Templates on Meta" sub="Only approved templates can start a conversation with someone who hasn't messaged first.">
-      <div className="overflow-x-auto">
+    <details className="card group">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3">
+        <span className="text-[14px] font-semibold">Templates on Meta</span>
+        <span className="text-[12px] text-muted">{templates.length} total · {approved} approved <span className="ml-1 text-brand group-open:hidden">Show</span><span className="ml-1 hidden text-brand group-open:inline">Hide</span></span>
+      </summary>
+      <div className="overflow-x-auto border-t border-line">
         <table className="table w-full">
           <thead><tr><th>Name</th><th>Language</th><th>Category</th><th>Status</th><th>Text</th></tr></thead>
           <tbody>
@@ -473,7 +484,7 @@ function Templates({ templates }: { templates: WaTemplate[] }) {
         </table>
         {!templates.length && <Empty title="No templates synced">Use "Sync templates" to pull them from Meta.</Empty>}
       </div>
-    </Card>
+    </details>
   );
 }
 
