@@ -21,7 +21,7 @@ function cleanBlocks(list: unknown): PromptVersion["blocks"] | string {
 export async function GET() {
   const a = await requireUser("managePrompts");
   if ("res" in a) return a.res;
-  return NextResponse.json({ prompts: a.store.prompts, blocks: BLOCKS, agents: a.store.agents });
+  return NextResponse.json({ prompts: a.store.prompts, blocks: BLOCKS });
 }
 
 // Create from the wizard: { client, product, tone, languages, ticket, dpd, blocks }

@@ -11,6 +11,8 @@ import { CHANNELS } from "@/lib/campaigns";
 import { renderMessage, type TemplateName } from "@/lib/messages";
 import { TONES } from "@/lib/prompts";
 import { TEAM } from "@/lib/team";
+import { AGENTS, STAGE_LABEL, bestAgents } from "@/lib/agentLibrary";
+import { parseSegmentKey } from "@/lib/allocation";
 import { d, inr, num } from "@/lib/format";
 import type { Campaign, ChannelConfig, ChannelKind, Slot, TierKey } from "@/lib/types";
 
@@ -367,7 +369,9 @@ export function ChannelsStep({ c, plan, data, editable, patch }: { c: CampaignVi
     whatsapp: used.includes("whatsapp") ? cfg.whatsapp ?? { template: "Payment link", slots: ["afternoon"], reminderHours: 24 } : undefined,
     telecaller: used.includes("telecaller") ? cfg.telecaller ?? { seats: 2, languages: langs.slice(0, 3), priorityFirst: true } : undefined,
   };
-  const agents = data.agents.filter((a) => a.channel === "AI Voice" && (full.voice?.languages ?? []).includes(a.language)).sort((a, b) => b.resolved - a.resolved).slice(0, 12);
+  // From the Agent library: the best agents for each DPD bucket that AI voice covers, in the chosen languages.
+  const voiceBuckets = [...new Set(plan.segments.filter((x) => (seg[x.key] ?? []).includes("voice")).map((x) => parseSegmentKey(x.key).bucket))];
+  const agents = [...new Map(voiceBuckets.flatMap((bucket) => bestAgents({ bucket, languages: full.voice?.languages, limit: 4 })).concat(AGENTS.filter((a) => full.voice?.agents.includes(a.id))).map((a) => [a.id, a])).values()];
   const local = (iso: string) => new Date(new Date(iso).getTime() + 330 * 60_000).toISOString().slice(0, 16);
   const fromLocal = (v: string) => new Date(`${v}:00+05:30`).toISOString();
   return (
@@ -403,8 +407,9 @@ export function ChannelsStep({ c, plan, data, editable, patch }: { c: CampaignVi
               <label className="block text-[12px] text-muted">Calls at once (each line carries 100)<input type="number" min={1} max={1000} className="input mt-1 block w-32" value={full.voice.concurrency} onChange={(e) => saveCfg({ ...full, voice: { ...full.voice!, concurrency: Number(e.target.value) } })} /></label>
               <div><div className="label mb-1">Languages</div><div className="flex flex-wrap gap-1.5">{langs.map((l) => <Chip key={l} on={full.voice!.languages.includes(l)} onClick={() => saveCfg({ ...full, voice: { ...full.voice!, languages: toggle(full.voice!.languages, l) } })}>{l}</Chip>)}</div></div>
               <div><div className="label mb-1">Agents, best first</div>
-                <div className="flex flex-wrap gap-1.5">{agents.map((a) => <Chip key={a.code} on={full.voice!.agents.includes(a.code)} onClick={() => saveCfg({ ...full, voice: { ...full.voice!, agents: toggle(full.voice!.agents, a.code) } })}>{a.language} · {a.product} <span className="text-muted">({a.resolved} resolved)</span></Chip>)}</div>
-                {!agents.length && <p className="text-[12px] text-muted">No voice agents for these languages yet.</p>}</div>
+                <div className="flex flex-wrap gap-1.5">{agents.map((a) => <Chip key={a.id} on={full.voice!.agents.includes(a.id)} onClick={() => saveCfg({ ...full, voice: { ...full.voice!, agents: toggle(full.voice!.agents, a.id) } })}><b>{a.name}</b> · {a.stage ? STAGE_LABEL[a.stage]?.split(" · ")[0] ?? a.stage : ""} · {a.personaTone} <span className="text-muted">{a.performance?.qcScore ? `QC ${a.performance.qcScore}%` : a.rating ? `★ ${a.rating}` : ""}</span></Chip>)}</div>
+                {!agents.length && <p className="text-[12px] text-muted">No library agents for these stages and languages yet.</p>}
+                <p className="mt-1 text-[11.5px] text-muted">From the Agent library, matched to each segment&apos;s DPD stage and the languages above.</p></div>
               <label className="block text-[12px] text-muted">Prompt the agents speak from
                 <select className="input mt-1 block w-full" value={c.promptId ?? ""} onChange={(e) => patch({ promptId: e.target.value })}>
                   <option value="">Choose a published prompt</option>

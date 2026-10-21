@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { can } from "@/lib/auth";
-import { ALLOCATION_FIELDS, DEMO_HEADERS, demoRow, matchColumns } from "@/lib/allocation";
+import { ALLOCATION_FIELDS, DEMO_HEADERS, demoRow, matchColumns, parseSegmentKey } from "@/lib/allocation";
+import { AGENTS, bestAgents } from "@/lib/agentLibrary";
 import { CHANNELS, CONDITION_LABEL, SLOT_LABEL, STEP_DEFS, TEMPLATES, TIER_KEYS, audienceOf, audienceSummary, blankAudience, campaignDetail, checkCampaign, maskConnector, starterWorkflow } from "@/lib/campaigns";
 import { campaignCompliance, campaignConversations, campaignEscalations, campaignGrievances } from "@/lib/campaignTabs";
 import { campaignPlan, defaultChannelConfig, planChannels, workflowFromPlan } from "@/lib/campaignPlan";
@@ -85,7 +86,7 @@ function cleanConfig(v: unknown, s: Store): ChannelConfig {
   const c = (v ?? {}) as Record<string, Record<string, unknown> | undefined>;
   const out: ChannelConfig = {};
   const langs = (x: unknown) => strs(x, 12).filter((l) => s.languages.includes(l) || l.length < 20);
-  if (c.voice) out.voice = { slots: slots(c.voice.slots, ["evening"]), concurrency: num(c.voice.concurrency, 1, 1000, 100), languages: langs(c.voice.languages), agents: strs(c.voice.agents, 40).filter((code) => s.agents.some((a) => a.code === code)) };
+  if (c.voice) out.voice = { slots: slots(c.voice.slots, ["evening"]), concurrency: num(c.voice.concurrency, 1, 1000, 100), languages: langs(c.voice.languages), agents: strs(c.voice.agents, 40).filter((code) => AGENTS.some((a) => a.id === code) || s.agents.some((a) => a.code === code)) };
   if (c.ivr) out.ivr = { voice: str(c.ivr.voice, 60) || "Female · borrower's language", slots: slots(c.ivr.slots, ["morning"]) };
   if (c.whatsapp) out.whatsapp = { template: TEMPLATES.includes(c.whatsapp.template as string) ? (c.whatsapp.template as string) : "Payment link", slots: slots(c.whatsapp.slots, ["afternoon"]), reminderHours: num(c.whatsapp.reminderHours, 1, 168, 24) };
   if (c.telecaller) out.telecaller = { seats: num(c.telecaller.seats, 1, 50, 2), languages: langs(c.telecaller.languages), priorityFirst: c.telecaller.priorityFirst !== false };
@@ -93,9 +94,16 @@ function cleanConfig(v: unknown, s: Store): ChannelConfig {
 }
 
 const voiceAgents = (s: Store) => s.agents.filter((x) => x.channel === "AI Voice" || x.channel === "IVR");
-const agentCodesFor = (s: Store, c: Campaign, languages: string[]) =>
-  voiceAgents(s).filter((a) => a.channel === "AI Voice" && (!c.audience.products.length || c.audience.products.includes(a.product)) && languages.includes(a.language))
-    .sort((a, b) => b.resolved - a.resolved).slice(0, 8).map((a) => a.code);
+/** Agent library picks: for each DPD bucket the voice segments cover, the best agents for that stage, product and language. */
+function agentCodesFor(s: Store, c: Campaign, languages: string[]) {
+  const product = c.audience.products[0] ?? audienceOf(s, c.audience)[0]?.product;
+  const buckets = [...new Set(Object.entries(c.segments ?? {}).filter(([, l]) => l.includes("voice")).map(([k]) => parseSegmentKey(k).bucket))];
+  const ids = buckets.flatMap((bucket) => {
+    const exact = bestAgents({ product, bucket, languages, limit: 2 });
+    return exact.length ? exact : bestAgents({ bucket, languages, limit: 2 });
+  }).map((a) => a.id);
+  return [...new Set(ids)].slice(0, 8);
+}
 
 /** Builds the segments, channel settings and workflow from the data, for a demo or freshly ingested campaign. */
 function fillPlan(s: Store, c: Campaign) {

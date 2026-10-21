@@ -1,17 +1,18 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Bot, GripVertical, History, Lock, PhoneCall, Plus, Rocket, Save, Sparkles, Wand2 } from "lucide-react";
+import { ArrowLeft, GripVertical, History, Lock, PhoneCall, Plus, Rocket, Save, Sparkles, Wand2 } from "lucide-react";
 import { post, useApi } from "@/components/useApi";
 import { Badge, Card, Empty, ErrorNote, Kpi, Loading, Tabs } from "@/components/ui";
 import {
   CATEGORIES, LOCKED, SOURCES, TARGET_PAGES, TONES, TOOLS, blockById, catLabel, pagesOf, pickBlocks, rewrite, toolsIn, transcript, variablesIn,
 } from "@/lib/prompts";
 import { d, num } from "@/lib/format";
-import type { Agent, BlockCategory, PromptBlock, PromptDoc, PromptVersion, Tone } from "@/lib/types";
+import { AGENTS, FACETS, STAGE_LABEL } from "@/lib/agentLibrary";
+import type { BlockCategory, PromptBlock, PromptDoc, PromptVersion, Tone } from "@/lib/types";
 
 type VBlock = PromptVersion["blocks"][number];
-interface Data { prompts: PromptDoc[]; blocks: PromptBlock[]; agents: Agent[] }
+interface Data { prompts: PromptDoc[]; blocks: PromptBlock[] }
 const PRODUCTS = ["BNPL", "Personal Loan", "Credit Card", "Two-Wheeler Loan"];
 /** How a prompt is named in the catalog: product, DPD bucket and the persona its tone gives the agent. */
 const PERSONA: Record<Tone, string> = { aggressive: "Aggressive", pushy: "Pushy & persistent", silent: "Silent listener", supportive: "Supportive & engaging", compliant: "Strictly compliant" };
@@ -27,7 +28,7 @@ export default function PromptsPage() {
 function Prompts() {
   const params = useSearchParams();
   const router = useRouter();
-  const { data, error, setData } = useApi<Data>("/api/prompts", () => ({ prompts: [], blocks: [], agents: [] }));
+  const { data, error, setData } = useApi<Data>("/api/prompts", () => ({ prompts: [], blocks: [] }));
   const [tab, setTab] = useState<StudioTab>("Prompt catalog");
   const [reference, setReference] = useState<string | null>(null);
   const openId = params.get("prompt");
@@ -42,7 +43,7 @@ function Prompts() {
     <>
       <p className="text-[13px] text-muted">Predixion only. The agents that call borrowers, the prompts they speak from, catalogued by product and persona, and a wizard that starts a new client from a proven prompt. Lender names are anonymised.</p>
       <Tabs tabs={["Agent library", "Prompt catalog", "Block library", "New client"] as const} value={tab} onChange={setTab} />
-      {tab === "Agent library" && <AgentLibrary agents={data.agents} prompts={data.prompts} />}
+      {tab === "Agent library" && <AgentLibrary prompts={data.prompts} />}
       {tab === "Prompt catalog" && <><Catalog prompts={data.prompts} onOpen={go} onStartFrom={(id) => { setReference(id); setTab("New client"); }} /><PromptList prompts={data.prompts} onOpen={go} /></>}
       {tab === "Block library" && <BlockLibrary blocks={data.blocks} />}
       {tab === "New client" && <Wizard prompts={data.prompts} reference={reference} onCreated={(p) => { upsert(p); go(p.id); }} />}
@@ -50,52 +51,100 @@ function Prompts() {
   );
 }
 
-/** Voice and IVR agents: what each one handles, in which language and voice, and how it's doing. */
-function AgentLibrary({ agents, prompts }: { agents: Agent[]; prompts: PromptDoc[] }) {
-  const [product, setProduct] = useState("all");
-  const [channel, setChannel] = useState("all");
-  const [lang, setLang] = useState("all");
-  const languages = [...new Set(agents.map((a) => a.language))].sort();
-  const list = agents.filter((a) => (product === "all" || a.product === product) && (channel === "all" || a.channel === channel) && (lang === "all" || a.language === lang));
-  const promptFor = (a: Agent) => prompts.find((p) => p.status === "Published" && p.product === a.product);
+/** The Agent library from the State Machine: every voice agent, searchable by service, product, stage, objective, language and persona. */
+function AgentLibrary({ prompts }: { prompts: PromptDoc[] }) {
+  const [service, setService] = useState("all");
+  const [f, setF] = useState({ product: "all", stage: "all", objective: "all", language: "all", persona: "all" });
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState<string | null>(null);
+  const list = AGENTS.filter((a) => (service === "all" || a.service === service)
+    && (f.product === "all" || a.products.includes(f.product)) && (f.stage === "all" || a.stage === f.stage)
+    && (f.objective === "all" || a.objective === f.objective) && (f.language === "all" || a.languages.includes(f.language))
+    && (f.persona === "all" || a.personaTone === f.persona)
+    && (!q || `${a.name} ${a.description} ${a.client ?? ""}`.toLowerCase().includes(q.toLowerCase())))
+    .sort((a, b) => Number(b.status === "Live") - Number(a.status === "Live") || (b.minutesSpoken ?? 0) - (a.minutesSpoken ?? 0));
+  const sel = AGENTS.find((a) => a.id === open);
+  const live = AGENTS.filter((a) => a.status === "Live");
+  const minutes = AGENTS.reduce((n, a) => n + (a.minutesSpoken ?? 0), 0);
+  const STATUS_CLS: Record<string, string> = { Live: "bg-good-soft text-good", Demo: "bg-info-soft text-info", Dev: "bg-sunk text-ink-2" };
+  const select = (k: keyof typeof f, label: string, options: string[]) => (
+    <select className="input" aria-label={label} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })}>
+      <option value="all">{label}: all</option>{options.map((o) => <option key={o}>{o}</option>)}
+    </select>
+  );
   return (
     <>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi label="Agents" value={num(agents.length)} sub={`${agents.filter((a) => a.channel === "AI Voice").length} AI voice · ${agents.filter((a) => a.channel === "IVR").length} IVR`} />
-        <Kpi label="Languages" value={num(languages.length)} sub={languages.slice(0, 4).join(", ")} />
-        <Kpi label="Live now" value={num(agents.reduce((n, a) => n + a.live, 0))} sub={`of ${num(agents.reduce((n, a) => n + a.max, 0))} at once`} />
-        <Kpi label="Resolved" value={num(agents.reduce((n, a) => n + a.resolved, 0))} tone="good" sub={`${num(agents.reduce((n, a) => n + a.open, 0))} still open`} />
+        <Kpi label="Agents" value={num(AGENTS.length)} sub={`${AGENTS.filter((a) => a.line === "Collections").length} collections · ${AGENTS.filter((a) => a.line === "Sales").length} sales`} />
+        <Kpi label="Live" value={num(live.length)} tone="good" sub={`${AGENTS.filter((a) => a.status === "Demo").length} demo · ${AGENTS.filter((a) => a.status === "Dev").length} in development`} />
+        <Kpi label="Minutes of conversation" value={num(minutes)} sub="Across the catalog" />
+        <Kpi label="Languages" value={num(FACETS.languages.length)} sub={FACETS.languages.slice(0, 5).join(", ")} />
+      </div>
+      <div className="seg flex-wrap" role="group" aria-label="Service">
+        <button aria-pressed={service === "all"} onClick={() => setService("all")}>All agents</button>
+        {FACETS.services.map((s) => <button key={s} aria-pressed={service === s} onClick={() => setService(s)}>{s}</button>)}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <div className="seg" role="group" aria-label="Product"><button aria-pressed={product === "all"} onClick={() => setProduct("all")}>All products</button>{PRODUCTS.map((p) => <button key={p} aria-pressed={product === p} onClick={() => setProduct(p)}>{p}</button>)}</div>
-        <select className="input" aria-label="Channel" value={channel} onChange={(e) => setChannel(e.target.value)}><option value="all">All channels</option>{[...new Set(agents.map((a) => a.channel))].map((c) => <option key={c}>{c}</option>)}</select>
-        <select className="input" aria-label="Language" value={lang} onChange={(e) => setLang(e.target.value)}><option value="all">All languages</option>{languages.map((l) => <option key={l}>{l}</option>)}</select>
+        {select("product", "Product", FACETS.products)}
+        {select("stage", "Stage", FACETS.stages)}
+        {select("objective", "Objective", FACETS.objectives)}
+        {select("language", "Language", FACETS.languages)}
+        {select("persona", "Persona", FACETS.personas)}
+        <input className="input w-56" placeholder="Search name or description" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search agents" />
+        <span className="text-[12.5px] text-muted num">{list.length} of {AGENTS.length}</span>
         <a className="ml-auto text-[12.5px] text-brand hover:underline" href="https://kollect-statemachine.onrender.com/" target="_blank" rel="noopener noreferrer">Open the State Machine →</a>
       </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {list.map((a) => {
-          const p = promptFor(a);
-          const rate = a.resolved + a.open ? Math.round((a.resolved / (a.resolved + a.open)) * 100) : 0;
-          return (
-            <section key={a.id} className="card p-4">
-              <div className="flex items-start gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-sunk"><Bot size={17} aria-hidden="true" /></span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] font-semibold">{a.name}</div>
-                  <div className="truncate font-mono text-[11.5px] text-muted">{a.code}</div>
-                </div>
-                <span className="shrink-0 rounded bg-sunk px-1.5 py-0.5 text-[11px] text-ink-2">{a.channel}</span>
-              </div>
-              <dl className="mt-3 grid grid-cols-2 gap-y-1 text-[12.5px]">
-                <dt className="text-muted">Product</dt><dd className="text-right">{a.product === "All" ? "All products" : a.product}</dd>
-                <dt className="text-muted">Language · voice</dt><dd className="text-right">{a.language} · {a.voice}</dd>
-                <dt className="text-muted">Calls at once</dt><dd className="text-right num">{a.live} / {a.max}</dd>
-                <dt className="text-muted">Resolved</dt><dd className="text-right num">{num(a.resolved)} <span className="text-muted">({rate}%)</span></dd>
-                <dt className="text-muted">Speaks from</dt><dd className="truncate text-right">{p ? `${p.client} v${p.current}` : "—"}</dd>
+
+      {sel && (
+        <Card title={<span className="flex items-center gap-2">{sel.name}<span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${STATUS_CLS[sel.status] ?? "bg-sunk"}`}>{sel.status}</span></span>}
+          sub={`${sel.service}${sel.client ? ` · ${sel.client}` : ""} · ${sel.provider ?? "Provider not set"}`}
+          right={<button className="btn btn-ghost min-h-8" onClick={() => setOpen(null)}>Close</button>}>
+          <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+            <div className="space-y-3 text-[13px]">
+              <p>{sel.description}</p>
+              <dl className="grid grid-cols-[140px_1fr] gap-y-1.5 text-[12.5px]">
+                <dt className="text-muted">Stage</dt><dd>{sel.stage ? STAGE_LABEL[sel.stage] ?? sel.stage : "—"}</dd>
+                <dt className="text-muted">Objective</dt><dd>{sel.objective}</dd>
+                <dt className="text-muted">Products</dt><dd>{sel.products.join(", ")}</dd>
+                <dt className="text-muted">Languages</dt><dd>{sel.languages.join(", ")}</dd>
+                <dt className="text-muted">Persona</dt><dd>{sel.personaTone}{sel.toneNote ? ` · ${sel.toneNote}` : ""}{sel.gender ? ` · ${sel.gender} voice` : ""}</dd>
+                {sel.bestRegion && <><dt className="text-muted">Works best in</dt><dd>{sel.bestRegion}</dd></>}
+                {sel.variables?.length ? <><dt className="text-muted">Needs from the file</dt><dd className="flex flex-wrap gap-1">{sel.variables.map((v) => <code key={v} className="rounded bg-sunk px-1.5 py-0.5 text-[11.5px]">{v}</code>)}</dd></> : null}
               </dl>
-            </section>
-          );
-        })}
+            </div>
+            <dl className="divide-y divide-line rounded-md border border-line text-[12.5px]">
+              {[["Rating", sel.rating ? `${sel.rating} / 5` : "Unrated"], ["Minutes talked", sel.minutesSpoken ? num(sel.minutesSpoken) : "No calls yet"],
+                ["QC score", sel.performance?.qcScore ? `${sel.performance.qcScore}%` : "—"], ["Response time", sel.performance?.latencyMs ? `${num(sel.performance.latencyMs)} ms` : "—"],
+                ["Speaking pace", sel.performance?.wordsPerMin ? `${sel.performance.wordsPerMin} words/min` : "—"],
+                ["Prompt in Kollect", (() => { const p = prompts.find((x) => x.status === "Published" && sel.products.some((sp) => sp.startsWith(x.product.replace(/s$/, "")))); return p ? `${p.client} v${p.current}` : "—"; })()]].map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-2 px-3 py-1.5"><dt className="text-muted">{k}</dt><dd className="font-medium num">{v}</dd></div>
+              ))}
+            </dl>
+          </div>
+        </Card>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {list.map((a) => (
+          <button key={a.id} onClick={() => setOpen(a.id)} className={`card p-4 text-left hover:border-line-strong ${open === a.id ? "border-brand" : ""}`}>
+            <div className="flex items-start gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sunk text-[12.5px] font-semibold">{a.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5"><span className="truncate text-[14px] font-semibold">{a.name}</span><span className={`shrink-0 rounded px-1.5 py-0.5 text-[10.5px] font-medium ${STATUS_CLS[a.status] ?? "bg-sunk"}`}>{a.status}</span></div>
+                <div className="truncate text-[11.5px] text-muted">{a.service}{a.client ? ` · ${a.client}` : ""}</div>
+              </div>
+              <span className="shrink-0 text-right text-[12px]">{a.rating ? <b className="num">★ {a.rating}</b> : <span className="text-muted">Unrated</span>}</span>
+            </div>
+            <p className="mt-2 line-clamp-2 text-[12.5px] text-ink-2">{a.description}</p>
+            <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
+              {a.stage && <span className="rounded bg-sunk px-1.5 py-0.5">{a.stage}</span>}
+              <span className="rounded bg-sunk px-1.5 py-0.5">{a.objective}</span>
+              {a.products.slice(0, 2).map((p) => <span key={p} className="rounded bg-sunk px-1.5 py-0.5">{p}</span>)}
+              <span className="rounded bg-brand-soft px-1.5 py-0.5 text-brand">{a.personaTone}</span>
+            </div>
+            <div className="mt-2 flex justify-between text-[11.5px] text-muted"><span className="truncate">{a.languages.join(", ")}</span><span className="shrink-0 num">{a.minutesSpoken ? `${num(a.minutesSpoken)} min` : "No calls yet"}</span></div>
+          </button>
+        ))}
       </div>
       {!list.length && <Card><Empty title="No agents match">Clear a filter.</Empty></Card>}
     </>
