@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { Building2, Globe2, Megaphone } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Area, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -11,6 +12,7 @@ import { localStore } from "@/components/local";
 import { Badge, C, Card, DISP_COLOR, ErrorNote, Kpi, Loading, Offline, Tabs, axisProps, tooltipStyle } from "@/components/ui";
 import { computePerformance } from "@/lib/metrics";
 import { inr, inrFull, num, pct, shortDay } from "@/lib/format";
+import { ROLE_LABEL } from "@/lib/roles";
 
 const TABS = ["Overview", "Patterns", "Forecast", "Roll rates", "Segments", "Products", "Channels", "Regions", "Escalations"] as const;
 type Tab = (typeof TABS)[number];
@@ -21,19 +23,59 @@ export default function PerformancePage() {
 }
 
 function Performance() {
-  const { qs, filters, scope, openBorrower } = useApp();
+  const { qs, filters, setFilters, scope, openBorrower, user, meta } = useApp();
   const params = useSearchParams();
   const router = useRouter();
   const initial = TABS.find((t) => t === params.get("tab")) ?? "Overview";
   const [tab, setTabState] = useState<Tab>(initial);
   const setTab = (t: Tab) => { setTabState(t); router.replace(`/performance?tab=${encodeURIComponent(t)}`, { scroll: false }); };
-  const { data, offline, error } = useApi(`/api/performance?${qs}`, () => computePerformance(localStore(), filters, scope));
+  // What this page is about: all of Predixion's collections, one company, or one campaign.
+  const isPredixion = user.role === "superadmin";
+  const [level, setLevel] = useState<"predixion" | "company" | "campaign">(isPredixion ? "predixion" : "company");
+  const [campaignId, setCampaignId] = useState("");
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string; company: string; status: string }[]>([]);
+  useEffect(() => {
+    if (user.role === "client") return;
+    fetch("/api/campaigns", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((j) => j && setCampaigns(j.campaigns.filter((c: { status: string }) => c.status !== "Draft").map((c: { id: string; name: string; company: string; status: string }) => ({ id: c.id, name: c.name, company: c.company, status: c.status })))).catch(() => {});
+  }, [user.role]);
+  useEffect(() => { if (level === "predixion" && filters.portfolio !== "all") setFilters({ ...filters, portfolio: "all" }); }, [level]); // eslint-disable-line react-hooks/exhaustive-deps
+  const campaign = campaigns.find((c) => c.id === campaignId);
+  const camQs = level === "campaign" && campaignId ? `&campaign=${campaignId}` : "";
+  const { data, offline, error } = useApi(`/api/performance?${qs}${camQs}`, () => computePerformance(localStore(), filters, scope));
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading />;
+  const company = user.role === "client" ? meta.clientPortfolio ?? "your company" : filters.portfolio && filters.portfolio !== "all" ? filters.portfolio : "all companies";
+  const scopeText = level === "predixion" ? "Predixion: every client and every campaign"
+    : level === "campaign" && campaign ? `Campaign: ${campaign.name} (${campaign.company})`
+    : `Company: ${company}`;
+  const audience = level === "predixion" ? "Predixion's team, to compare clients and see how collections are doing overall."
+    : level === "campaign" ? "The supervisor running the campaign and the Manager who approved it."
+    : "The lender's Manager and supervisors: how their book is being collected across all campaigns.";
 
   return (
     <>
       <Offline show={offline} />
+      <section className="card flex flex-wrap items-center gap-3 px-4 py-3">
+        <div className="seg" role="group" aria-label="Scope">
+          {isPredixion && <button aria-pressed={level === "predixion"} onClick={() => setLevel("predixion")}><Globe2 size={13} className="mr-1 inline" aria-hidden="true" />Predixion</button>}
+          <button aria-pressed={level === "company"} onClick={() => setLevel("company")}><Building2 size={13} className="mr-1 inline" aria-hidden="true" />Company</button>
+          {user.role !== "client" && <button aria-pressed={level === "campaign"} onClick={() => { setLevel("campaign"); if (!campaignId && campaigns[0]) setCampaignId(campaigns[0].id); }}><Megaphone size={13} className="mr-1 inline" aria-hidden="true" />Campaign</button>}
+        </div>
+        {level === "company" && user.role !== "client" && (
+          <select className="input" aria-label="Company" value={filters.portfolio ?? "all"} onChange={(e) => setFilters({ ...filters, portfolio: e.target.value })}>
+            <option value="all">All companies</option>{meta.portfolios.map((p) => <option key={p}>{p}</option>)}
+          </select>
+        )}
+        {level === "campaign" && (
+          <select className="input max-w-[340px]" aria-label="Campaign" value={campaignId} onChange={(e) => setCampaignId(e.target.value)}>
+            {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.status}</option>)}
+          </select>
+        )}
+        <div className="min-w-0 flex-1 text-[12.5px]">
+          <div><span className="text-muted">You&apos;re looking at </span><b>{scopeText}</b><span className="text-muted"> · dates, product and channel from the filters above</span></div>
+          <div className="text-muted">For: {audience} You&apos;re signed in as {ROLE_LABEL[user.role]}.</div>
+        </div>
+      </section>
       <Tabs tabs={TABS} value={tab} onChange={setTab} />
       {tab === "Overview" && <Overview data={data} />}
       {tab === "Patterns" && <Patterns p={data.patterns} />}

@@ -7,9 +7,14 @@ import { istDay } from "@/lib/time";
 export async function GET(req: Request) {
   const a = await requireUser(undefined, "portfolio");
   if ("res" in a) return a.res;
-  const company = new URL(req.url).searchParams.get("company") ?? "all";
+  const url = new URL(req.url);
+  const company = url.searchParams.get("company") ?? "all";
   if (company !== "all" && !a.store.portfolios.includes(company)) return bad("Unknown company", 404);
-  return NextResponse.json(computePortfolio(a.store, company));
+  // ?from=YYYY-MM-DD&to=YYYY-MM-DD (IST days, inclusive). Without them: this month so far.
+  const day = (v: string | null, end: boolean) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T${end ? "23:59:59" : "00:00:00"}+05:30`) : NaN);
+  const from = day(url.searchParams.get("from"), false), to = day(url.searchParams.get("to"), true);
+  const range = Number.isNaN(from) || Number.isNaN(to) || from > to ? undefined : { from, to: Math.min(to, Date.now()) };
+  return NextResponse.json(computePortfolio(a.store, company, Date.now(), range));
 }
 
 // Set a target: { company, product, target }
