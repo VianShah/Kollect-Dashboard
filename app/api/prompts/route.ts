@@ -21,7 +21,7 @@ function cleanBlocks(list: unknown): PromptVersion["blocks"] | string {
 export async function GET() {
   const a = await requireUser("managePrompts");
   if ("res" in a) return a.res;
-  return NextResponse.json({ prompts: a.store.prompts, blocks: BLOCKS });
+  return NextResponse.json({ prompts: a.store.prompts, blocks: BLOCKS, agents: a.store.agents });
 }
 
 // Create from the wizard: { client, product, tone, languages, ticket, dpd, blocks }
@@ -39,7 +39,7 @@ export async function POST(req: Request) {
   const doc: PromptDoc = {
     id: `P${store.prompts.length + 1}_${Date.now().toString(36)}`, client, product: String(body.product ?? "").slice(0, 40), tone: body.tone as Tone,
     languages: Array.isArray(body.languages) ? body.languages.slice(0, 10).map(String) : [], ticket: Number(body.ticket) || 0, dpd: String(body.dpd ?? "").slice(0, 20),
-    status: "Draft", current: 1, versions: [{ v: 1, blocks, note: "Assembled by the new-client wizard", by: user.username, at: now }], tools: toolsIn(blocks.map((b) => b.text)), updatedAt: now,
+    status: "Draft", current: 1, versions: [{ v: 1, blocks, note: typeof body.reference === "string" && body.reference ? `Started from ${body.reference}` : "Assembled by the new-client wizard", by: user.username, at: now }], tools: toolsIn(blocks.map((b) => b.text)), updatedAt: now,
   };
   store.prompts.push(doc);
   audit(store, user, "prompt_create", client, `${doc.product} · ${doc.tone} · ${blocks.length} blocks`);

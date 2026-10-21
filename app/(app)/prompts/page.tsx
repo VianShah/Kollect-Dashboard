@@ -1,17 +1,22 @@
 "use client";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, GripVertical, History, Lock, PhoneCall, Rocket, Save, Sparkles, Wand2 } from "lucide-react";
+import { ArrowLeft, Bot, GripVertical, History, Lock, PhoneCall, Plus, Rocket, Save, Sparkles, Wand2 } from "lucide-react";
 import { post, useApi } from "@/components/useApi";
 import { Badge, Card, Empty, ErrorNote, Kpi, Loading, Tabs } from "@/components/ui";
 import {
   CATEGORIES, LOCKED, SOURCES, TARGET_PAGES, TONES, TOOLS, blockById, catLabel, pagesOf, pickBlocks, rewrite, toolsIn, transcript, variablesIn,
 } from "@/lib/prompts";
 import { d, num } from "@/lib/format";
-import type { BlockCategory, PromptBlock, PromptDoc, PromptVersion, Tone } from "@/lib/types";
+import type { Agent, BlockCategory, PromptBlock, PromptDoc, PromptVersion, Tone } from "@/lib/types";
 
 type VBlock = PromptVersion["blocks"][number];
-interface Data { prompts: PromptDoc[]; blocks: PromptBlock[] }
+interface Data { prompts: PromptDoc[]; blocks: PromptBlock[]; agents: Agent[] }
+const PRODUCTS = ["BNPL", "Personal Loan", "Credit Card", "Two-Wheeler Loan"];
+/** How a prompt is named in the catalog: product, DPD bucket and the persona its tone gives the agent. */
+const PERSONA: Record<Tone, string> = { aggressive: "Aggressive", pushy: "Pushy & persistent", silent: "Silent listener", supportive: "Supportive & engaging", compliant: "Strictly compliant" };
+const catalogName = (p: Pick<PromptDoc, "product" | "dpd" | "tone">) => `${p.product} · ${!p.dpd || p.dpd === "All" ? "All DPD" : /^\d/.test(p.dpd) ? `${p.dpd} DPD` : p.dpd} · ${PERSONA[p.tone]}`;
+type StudioTab = "Agent library" | "Prompt catalog" | "Block library" | "New client";
 const STATUS_BADGE: Record<PromptDoc["status"], string> = { Draft: "Draft", Tested: "Scheduled", Published: "Running" };
 const toneLabel = (t: Tone) => TONES.find((x) => x.key === t)!.label;
 
@@ -22,8 +27,9 @@ export default function PromptsPage() {
 function Prompts() {
   const params = useSearchParams();
   const router = useRouter();
-  const { data, error, setData } = useApi<Data>("/api/prompts", () => ({ prompts: [], blocks: [] }));
-  const [tab, setTab] = useState<"Prompts" | "Block library" | "New client wizard">("Prompts");
+  const { data, error, setData } = useApi<Data>("/api/prompts", () => ({ prompts: [], blocks: [], agents: [] }));
+  const [tab, setTab] = useState<StudioTab>("Prompt catalog");
+  const [reference, setReference] = useState<string | null>(null);
   const openId = params.get("prompt");
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
@@ -34,12 +40,109 @@ function Prompts() {
   if (open) return <Editor key={open.id} doc={open} focusBlock={params.get("block")} onBack={() => go(null)} onSaved={upsert} />;
   return (
     <>
-      <p className="text-[13px] text-muted">Predixion only. Build a tested voice-agent prompt for a new client in hours by mixing proven blocks from production prompts. Lender names are anonymised.</p>
-      <Tabs tabs={["Prompts", "Block library", "New client wizard"] as const} value={tab} onChange={setTab} />
-      {tab === "Prompts" && <PromptList prompts={data.prompts} onOpen={go} />}
+      <p className="text-[13px] text-muted">Predixion only. The agents that call borrowers, the prompts they speak from, catalogued by product and persona, and a wizard that starts a new client from a proven prompt. Lender names are anonymised.</p>
+      <Tabs tabs={["Agent library", "Prompt catalog", "Block library", "New client"] as const} value={tab} onChange={setTab} />
+      {tab === "Agent library" && <AgentLibrary agents={data.agents} prompts={data.prompts} />}
+      {tab === "Prompt catalog" && <><Catalog prompts={data.prompts} onOpen={go} onStartFrom={(id) => { setReference(id); setTab("New client"); }} /><PromptList prompts={data.prompts} onOpen={go} /></>}
       {tab === "Block library" && <BlockLibrary blocks={data.blocks} />}
-      {tab === "New client wizard" && <Wizard onCreated={(p) => { upsert(p); go(p.id); }} />}
+      {tab === "New client" && <Wizard prompts={data.prompts} reference={reference} onCreated={(p) => { upsert(p); go(p.id); }} />}
     </>
+  );
+}
+
+/** Voice and IVR agents: what each one handles, in which language and voice, and how it's doing. */
+function AgentLibrary({ agents, prompts }: { agents: Agent[]; prompts: PromptDoc[] }) {
+  const [product, setProduct] = useState("all");
+  const [channel, setChannel] = useState("all");
+  const [lang, setLang] = useState("all");
+  const languages = [...new Set(agents.map((a) => a.language))].sort();
+  const list = agents.filter((a) => (product === "all" || a.product === product) && (channel === "all" || a.channel === channel) && (lang === "all" || a.language === lang));
+  const promptFor = (a: Agent) => prompts.find((p) => p.status === "Published" && p.product === a.product);
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Kpi label="Agents" value={num(agents.length)} sub={`${agents.filter((a) => a.channel === "AI Voice").length} AI voice · ${agents.filter((a) => a.channel === "IVR").length} IVR`} />
+        <Kpi label="Languages" value={num(languages.length)} sub={languages.slice(0, 4).join(", ")} />
+        <Kpi label="Live now" value={num(agents.reduce((n, a) => n + a.live, 0))} sub={`of ${num(agents.reduce((n, a) => n + a.max, 0))} at once`} />
+        <Kpi label="Resolved" value={num(agents.reduce((n, a) => n + a.resolved, 0))} tone="good" sub={`${num(agents.reduce((n, a) => n + a.open, 0))} still open`} />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="seg" role="group" aria-label="Product"><button aria-pressed={product === "all"} onClick={() => setProduct("all")}>All products</button>{PRODUCTS.map((p) => <button key={p} aria-pressed={product === p} onClick={() => setProduct(p)}>{p}</button>)}</div>
+        <select className="input" aria-label="Channel" value={channel} onChange={(e) => setChannel(e.target.value)}><option value="all">All channels</option>{[...new Set(agents.map((a) => a.channel))].map((c) => <option key={c}>{c}</option>)}</select>
+        <select className="input" aria-label="Language" value={lang} onChange={(e) => setLang(e.target.value)}><option value="all">All languages</option>{languages.map((l) => <option key={l}>{l}</option>)}</select>
+        <a className="ml-auto text-[12.5px] text-brand hover:underline" href="https://kollect-statemachine.onrender.com/" target="_blank" rel="noopener noreferrer">Open the State Machine →</a>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {list.map((a) => {
+          const p = promptFor(a);
+          const rate = a.resolved + a.open ? Math.round((a.resolved / (a.resolved + a.open)) * 100) : 0;
+          return (
+            <section key={a.id} className="card p-4">
+              <div className="flex items-start gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-sunk"><Bot size={17} aria-hidden="true" /></span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[14px] font-semibold">{a.name}</div>
+                  <div className="truncate font-mono text-[11.5px] text-muted">{a.code}</div>
+                </div>
+                <span className="shrink-0 rounded bg-sunk px-1.5 py-0.5 text-[11px] text-ink-2">{a.channel}</span>
+              </div>
+              <dl className="mt-3 grid grid-cols-2 gap-y-1 text-[12.5px]">
+                <dt className="text-muted">Product</dt><dd className="text-right">{a.product === "All" ? "All products" : a.product}</dd>
+                <dt className="text-muted">Language · voice</dt><dd className="text-right">{a.language} · {a.voice}</dd>
+                <dt className="text-muted">Calls at once</dt><dd className="text-right num">{a.live} / {a.max}</dd>
+                <dt className="text-muted">Resolved</dt><dd className="text-right num">{num(a.resolved)} <span className="text-muted">({rate}%)</span></dd>
+                <dt className="text-muted">Speaks from</dt><dd className="truncate text-right">{p ? `${p.client} v${p.current}` : "—"}</dd>
+              </dl>
+            </section>
+          );
+        })}
+      </div>
+      {!list.length && <Card><Empty title="No agents match">Clear a filter.</Empty></Card>}
+    </>
+  );
+}
+
+/** The prompt catalog: every product, the personas built for it, and the gaps still to build. */
+function Catalog({ prompts, onOpen, onStartFrom }: { prompts: PromptDoc[]; onOpen: (id: string) => void; onStartFrom: (id: string) => void }) {
+  return (
+    <div className="space-y-4">
+      {PRODUCTS.map((product) => {
+        const mine = prompts.filter((p) => p.product === product);
+        const missing = (["supportive", "aggressive"] as Tone[]).filter((t) => !mine.some((p) => p.tone === t));
+        return (
+          <Card key={product} title={product} sub={`${mine.length} prompt${mine.length === 1 ? "" : "s"} · ${mine.filter((p) => p.status === "Published").length} published`}>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {mine.map((p) => {
+                const v = p.versions.find((x) => x.v === p.current);
+                return (
+                  <article key={p.id} className="rounded-lg border border-line p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <button className="text-left text-[13.5px] font-semibold hover:text-brand hover:underline" onClick={() => onOpen(p.id)}>{catalogName(p)}</button>
+                      <Badge>{STATUS_BADGE[p.status]}</Badge>
+                    </div>
+                    <div className="mt-0.5 text-[12px] text-muted">{p.client}{p.source ? " · production source" : ""} · v{p.current} · {p.languages.join(", ") || "—"}</div>
+                    <div className="mt-2 flex flex-wrap gap-x-3 text-[12px]">
+                      <span>Last test: {v?.test ? <b className={v.test.passed ? "text-good" : "text-bad"}>{v.test.score}%</b> : <span className="text-muted">not run</span>}</span>
+                      {p.ticket > 0 && <span className="text-muted">Avg ticket ₹{num(p.ticket)}</span>}
+                    </div>
+                    <div className="mt-2.5 flex gap-2">
+                      <button className="btn min-h-8 px-2 text-[12px]" onClick={() => onOpen(p.id)}>Open</button>
+                      <button className="btn min-h-8 px-2 text-[12px]" onClick={() => onStartFrom(p.id)}><Wand2 size={12} aria-hidden="true" />New client from this</button>
+                    </div>
+                  </article>
+                );
+              })}
+              {missing.map((t) => (
+                <article key={t} className="flex flex-col justify-between rounded-lg border border-dashed border-line-strong p-3">
+                  <div><div className="text-[13.5px] font-semibold text-muted">{product} · {PERSONA[t]}</div><div className="text-[12px] text-muted">Not built yet</div></div>
+                  {(mine[0] ?? prompts.find((x) => x.status === "Published")) && <button className="btn mt-2 min-h-8 self-start px-2 text-[12px]" onClick={() => onStartFrom((mine[0] ?? prompts.find((x) => x.status === "Published"))!.id)}><Plus size={12} aria-hidden="true" />Build it</button>}
+                </article>
+              ))}
+            </div>
+          </Card>
+        );
+      })}
+    </div>
   );
 }
 
@@ -120,23 +223,41 @@ function BlockLibrary({ blocks }: { blocks: PromptBlock[] }) {
   );
 }
 
-function Wizard({ onCreated }: { onCreated: (p: PromptDoc) => void }) {
-  const [form, setForm] = useState({ client: "Brisk Pay", product: "BNPL", ticket: "4200", dpd: "1–30", languages: ["Hindi", "English"], tone: "aggressive" as Tone });
+function Wizard({ prompts, reference, onCreated }: { prompts: PromptDoc[]; reference: string | null; onCreated: (p: PromptDoc) => void }) {
+  const proven = prompts.filter((p) => p.status === "Published" || p.source);
+  const [refId, setRefId] = useState(reference ?? proven[0]?.id ?? "");
+  const ref = prompts.find((p) => p.id === refId);
+  const [form, setForm] = useState({ client: "Brisk Pay", product: ref?.product ?? "BNPL", ticket: String(ref?.ticket ?? 4200), dpd: ref?.dpd || "1–30", languages: ref?.languages.length ? ref.languages : ["Hindi", "English"], tone: (ref?.tone ?? "aggressive") as Tone, guardrails: "", opening: "" });
+  useEffect(() => { if (ref) setForm((f) => ({ ...f, product: ref.product, ticket: String(ref.ticket || f.ticket), dpd: ref.dpd || f.dpd, languages: ref.languages.length ? ref.languages : f.languages })); }, [refId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [phase, setPhase] = useState<"form" | "thinking" | "result">("form");
   const [msg, setMsg] = useState("");
   const picks = useMemo(() => pickBlocks(form.product, form.tone), [form.product, form.tone]);
-  const assembled: VBlock[] = picks.map((p) => ({ blockId: p.block.id, category: p.category, text: rewrite(p.block.text, p.category, form.tone) }));
+  // With a reference, its own blocks are the starting point; without one, the best-proven block for each part of the call.
+  const refBlocks = ref?.versions.find((v) => v.v === ref.current)?.blocks;
+  const base: VBlock[] = refBlocks ?? picks.map((p) => ({ blockId: p.block.id, category: p.category, text: p.block.text }));
+  const assembled: VBlock[] = base.map((b) => {
+    let text = LOCKED.includes(b.category) ? b.text : rewrite(b.text, b.category, form.tone);
+    if (b.category === "opening" && form.opening.trim()) text = form.opening.trim();
+    if (b.category === "guardrails" && form.guardrails.trim()) text = `${text}\n${form.guardrails.trim().split(/\n+/).map((l) => `- ${l.replace(/^[-•]\s*/, "")}`).join("\n")}`;
+    return { ...b, text };
+  });
   const texts = assembled.map((b) => b.text);
   const generate = () => { setPhase("thinking"); setTimeout(() => setPhase("result"), 1400); };
   async function create() {
-    const r = await post("/api/prompts", { ...form, ticket: Number(form.ticket), blocks: assembled });
+    const r = await post("/api/prompts", { ...form, ticket: Number(form.ticket), blocks: assembled, reference: ref ? `${ref.client} v${ref.current}` : "" });
     if (r.ok) onCreated(r.json.prompt); else setMsg(r.json.error ?? "Couldn't create the draft.");
   }
   const LANGS = ["Hindi", "English", "Marathi", "Tamil", "Telugu", "Bengali", "Gujarati", "Kannada"];
   return (
     <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-      <Card title="New client" sub="Describe the client. The assistant picks the best-proven block for each part of the call and rewrites it for the tone.">
+      <Card title="New client" sub="Start from a proven prompt, describe the client, then the assistant rewrites it for the tone. Compliance blocks stay as they are.">
         <fieldset disabled={phase === "thinking"} className="space-y-3 text-[12px] text-muted">
+          <label className="block">Start from (reference prompt)
+            <select className="input mt-1 block w-full" value={refId} onChange={(e) => setRefId(e.target.value)}>
+              <option value="">No reference: best-proven blocks</option>
+              {proven.map((p) => <option key={p.id} value={p.id}>{catalogName(p)} · {p.client} v{p.current}</option>)}
+            </select>
+          </label>
           <label className="block">Client name<input className="input mt-1 block w-full" value={form.client} onChange={(e) => setForm({ ...form, client: e.target.value })} /></label>
           <label className="block">Product
             <select className="input mt-1 block w-full" value={form.product} onChange={(e) => setForm({ ...form, product: e.target.value })}>
@@ -168,6 +289,8 @@ function Wizard({ onCreated }: { onCreated: (p: PromptDoc) => void }) {
               ))}
             </div>
           </div>
+          <label className="block">Specific opening (optional)<textarea rows={2} className="input mt-1 block w-full" placeholder="e.g. Namaste {first_name}, this is Riya from Brisk Pay…" value={form.opening} onChange={(e) => setForm({ ...form, opening: e.target.value })} /></label>
+          <label className="block">Extra guardrails or compliance lines (one per line)<textarea rows={3} className="input mt-1 block w-full" placeholder={"Never mention the co-borrower\nNo calls on Sundays"} value={form.guardrails} onChange={(e) => setForm({ ...form, guardrails: e.target.value })} /></label>
           <button type="button" className="btn btn-primary w-full" onClick={generate}><Wand2 size={14} aria-hidden="true" />Assemble prompt</button>
           <p>Disclosure, complaint handling and compliance guardrails are locked: the tone never rewrites them.</p>
         </fieldset>
@@ -188,14 +311,17 @@ function Wizard({ onCreated }: { onCreated: (p: PromptDoc) => void }) {
           <Card title={`${form.client} · ${form.product} · ${toneLabel(form.tone)}`} sub="Simulated LLM output: engineering connects the real model. Review every block before testing."
             right={<button className="btn btn-primary" onClick={create}><Save size={14} aria-hidden="true" />Create draft</button>}>
             <ol className="space-y-3">
-              {picks.map((p, i) => (
-                <li key={p.category} className="rounded-md border border-line p-3">
+              {assembled.map((b, i) => (
+                <li key={`${b.category}-${i}`} className="rounded-md border border-line p-3">
                   <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                    <span className="font-semibold">{i + 1}. {catLabel(p.category)}</span>
-                    {LOCKED.includes(p.category) && <span className="inline-flex items-center gap-1 rounded bg-sunk px-1.5 py-0.5 text-muted"><Lock size={11} aria-hidden="true" />Locked</span>}
-                    <span className="ml-auto text-muted">From {p.block.source} ({p.block.id}) · {p.reason}</span>
+                    <span className="font-semibold">{i + 1}. {catLabel(b.category)}</span>
+                    {LOCKED.includes(b.category) && <span className="inline-flex items-center gap-1 rounded bg-sunk px-1.5 py-0.5 text-muted"><Lock size={11} aria-hidden="true" />Locked</span>}
+                    <span className="ml-auto text-muted">{ref ? `From ${ref.client} v${ref.current}` : (() => { const p = picks.find((x) => x.category === b.category); return p ? `From ${p.block.source} (${p.block.id}) · ${p.reason}` : ""; })()}</span>
                   </div>
-                  <p className="mt-1.5 whitespace-pre-wrap text-[13px]">{assembled[i].text}</p>
+                  <p className="mt-1.5 whitespace-pre-wrap text-[13px]">{b.text}</p>
+                  {base[i].text !== b.text && (
+                    <details className="mt-1.5 text-[12px] text-muted"><summary className="cursor-pointer select-none">Compare with the reference</summary><p className="mt-1 whitespace-pre-wrap rounded bg-sunk px-2 py-1.5">{base[i].text}</p></details>
+                  )}
                 </li>
               ))}
             </ol>
