@@ -9,7 +9,8 @@ import { computeFollowUps } from "@/lib/metrics";
 import { can } from "@/lib/roles";
 import { istDay } from "@/lib/time";
 import { time } from "@/lib/format";
-import type { FollowUp } from "@/lib/types";
+import { REACH_CHANNELS, REACH_COLOR } from "@/lib/followups";
+import type { FollowUp, ReachChannel } from "@/lib/types";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -25,13 +26,15 @@ export default function FollowUps() {
   const today = istDay(Date.now());
   const [month, setMonth] = useState(today.slice(0, 7));
   const [day, setDay] = useState(today);
+  const [via, setVia] = useState<"all" | ReachChannel>("all");
+  const [msg, setMsg] = useState("");
   const { data, setData, offline, error } = useApi(`/api/followups?month=${month}&${qs}`, () => computeFollowUps(localStore(), filters, scope, month));
 
   const byDay = useMemo(() => {
     const m = new Map<string, FollowUp[]>();
-    for (const f of data?.items ?? []) { const k = istDay(f.at); m.set(k, [...(m.get(k) ?? []), f]); }
+    for (const f of data?.items ?? []) { if (via !== "all" && f.reachVia !== via) continue; const k = istDay(f.at); m.set(k, [...(m.get(k) ?? []), f]); }
     return m;
-  }, [data]);
+  }, [data, via]);
 
   if (error) return <ErrorNote text={error} />;
   if (!data) return <Loading rows={1} />;
@@ -47,6 +50,11 @@ export default function FollowUps() {
   const agenda = (byDay.get(day) ?? []).sort((a, b) => a.at.localeCompare(b.at));
   const canEdit = can(user.role, "followup");
 
+  async function setReach(f: FollowUp, reachVia: ReachChannel) {
+    const r = await post("/api/followups", { id: f.id, reachVia });
+    if (r.ok) { setData((cur) => cur && { ...cur, items: cur.items.map((x) => (x.id === f.id ? { ...x, reachVia } : x)) }); setMsg(""); bump(); }
+    else setMsg(r.json.error ?? "Could not change the channel.");
+  }
   async function setStatus(f: FollowUp, status: FollowUp["status"]) {
     setData((cur) => cur && { ...cur, items: cur.items.map((x) => (x.id === f.id ? { ...x, status } : x)) });
     const r = await post("/api/followups", { id: f.id, status });
@@ -60,6 +68,14 @@ export default function FollowUps() {
         <Kpi label={`Scheduled in ${MONTHS[mo - 1]}`} value={data.counts.scheduled} sub="Still to be made" />
         <Kpi label="Completed" value={data.counts.done} tone="good" sub="Call-backs made on time" />
         <Kpi label="Missed" value={data.counts.missed} tone={data.counts.missed ? "bad" : undefined} sub="Time passed with no call" />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[12.5px] text-muted">Reach out by</span>
+        <div className="seg" role="group" aria-label="Channel">
+          <button aria-pressed={via === "all"} onClick={() => setVia("all")}>All channels</button>
+          {REACH_CHANNELS.map((c) => <button key={c} aria-pressed={via === c} onClick={() => setVia(c)}><span className={`mr-1.5 inline-block h-2 w-2 rounded-full ${REACH_COLOR[c]}`} aria-hidden="true" />{c} <span className="text-muted num">{data.items.filter((x) => x.reachVia === c && x.status === "Scheduled").length}</span></button>)}
+        </div>
+        {msg && <span className="text-[12.5px] text-bad" role="alert">{msg}</span>}
       </div>
       <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
         <Card pad={false}
@@ -92,6 +108,7 @@ export default function FollowUps() {
                     {missed > 0 && <span className="rounded bg-bad-soft px-1 text-[11px] font-medium text-bad num">{missed} missed</span>}
                     {done > 0 && <span className="px-1 text-[11px] text-muted num">{done} done</span>}
                   </span>
+                  {list.length > 0 && <span className="mt-1 flex flex-wrap gap-0.5 px-1" aria-hidden="true">{REACH_CHANNELS.filter((ch) => list.some((x) => x.reachVia === ch)).map((ch) => <span key={ch} className={`h-1.5 w-1.5 rounded-full ${REACH_COLOR[ch]}`} title={ch} />)}</span>}
                 </button>
               );
             })}
@@ -108,10 +125,15 @@ export default function FollowUps() {
                   <span className="w-11 shrink-0 font-mono text-[13px] num">{time(f.at)}</span>
                   <div className="min-w-0 flex-1">
                     <button className="text-left text-[13.5px] font-medium hover:text-brand hover:underline" onClick={() => openBorrower(f.borrowerId)}>{f.name}</button>
-                    <div className="text-[12px] text-muted">{f.product} · asked via {f.requestedVia}</div>
+                    <div className="text-[12px] text-muted">{f.product} · asked via {f.requestedVia === "Human Desk" ? "a telecaller" : f.requestedVia}</div>
                     <p className="mt-1 text-[13px] text-ink-2">“{f.note}”</p>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <Badge>{f.status}</Badge>
+                      <label className="inline-flex items-center gap-1 text-[12px] text-muted"><span className={`h-2 w-2 rounded-full ${f.reachVia ? REACH_COLOR[f.reachVia] : "bg-muted"}`} aria-hidden="true" />By
+                        <select className="input h-7 py-0 text-[12px]" value={f.reachVia ?? "Telecaller"} disabled={!canEdit || f.status !== "Scheduled"} onChange={(e) => setReach(f, e.target.value as ReachChannel)} aria-label={`Channel for ${f.name}`}>
+                          {REACH_CHANNELS.map((c) => <option key={c}>{c}</option>)}
+                        </select>
+                      </label>
                       {canEdit && f.status !== "Done" && <button className="btn min-h-7 px-2 text-[12px]" onClick={() => setStatus(f, "Done")}>Mark done</button>}
                       {canEdit && f.status === "Scheduled" && Date.parse(f.at) < Date.now() && <button className="btn min-h-7 px-2 text-[12px]" onClick={() => setStatus(f, "Missed")}>Mark missed</button>}
                     </div>

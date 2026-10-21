@@ -295,7 +295,10 @@ export interface FollowUp {
   requestedVia: Channel;
   note: string;
   status: "Scheduled" | "Done" | "Missed";
+  /** How the reach-out happens. Not set on older call-backs: worked out from how it was asked for. */
+  reachVia?: ReachChannel;
 }
+export type ReachChannel = "Telecaller" | "AI voice" | "WhatsApp" | "IVR";
 
 export interface Agent {
   id: string;

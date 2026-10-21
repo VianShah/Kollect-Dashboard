@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { deskScope, inDesk } from "@/lib/calldesk";
 import { handoffList } from "@/lib/handoffs";
+import { can } from "@/lib/auth";
+import { TEAM } from "@/lib/team";
 import { audit, saveStore } from "@/lib/store";
 
 export async function GET() {
@@ -11,12 +13,13 @@ export async function GET() {
   return NextResponse.json({ items: handoffList(a.store, a.user.username).filter((x) => inDesk(scope, x.borrowerId)) });
 }
 
-// { borrowerId, action: "cold" | "hot" | "accept" | "resolve", via?: "WhatsApp" | "CRM", outcome? }
+// { borrowerId, action: "cold" | "hot" | "accept" | "assign" | "resolve", via?: "WhatsApp" | "CRM", outcome?, to? (teammate id) }
 export async function POST(req: Request) {
   const a = await requireUser("handoff");
   if ("res" in a) return a.res;
   const { store, user } = a;
-  const { borrowerId, action, via, outcome } = await req.json().catch(() => ({}));
+  const { borrowerId, action, via, outcome, to } = await req.json().catch(() => ({}));
+  if (action === "assign" && !can(user, "assignWork")) return bad("Only a supervisor can assign escalations", 403);
   const b = store.borrowers.find((x) => x.id === borrowerId && x.disposition === "Escalated");
   if (!b || !inDesk(deskScope(store, user), b.id)) return bad("Not in the escalation queue", 404);
   const h = (store.handoffs[b.id] ??= { status: "Waiting" });
@@ -26,13 +29,17 @@ export async function POST(req: Request) {
     if (via !== "WhatsApp" && via !== "CRM") return bad("Choose WhatsApp or CRM for the summary");
     Object.assign(h, { mode: "hot", status: "With telecaller", owner: user.username, summarySentVia: via });
   } else if (action === "accept") Object.assign(h, { status: "With telecaller", owner: user.username });
-  else if (action === "resolve") {
+  else if (action === "assign") {
+    const t = TEAM.find((x) => x.id === to);
+    if (!t) return bad("Pick a telecaller");
+    Object.assign(h, { mode: "hot", status: "With telecaller", owner: t.username ?? t.name, summarySentVia: "CRM" });
+  } else if (action === "resolve") {
     const o = typeof outcome === "string" ? outcome.trim().slice(0, 200) : "";
     if (o.length < 3) return bad("Add the outcome before resolving");
     Object.assign(h, { status: "Resolved", outcome: o });
   } else return bad("Unknown action");
   h.updatedAt = now;
-  audit(store, user, `handoff_${action}`, b.loanId, action === "hot" ? `AI summary via ${via}` : action === "resolve" ? h.outcome ?? "" : "");
+  audit(store, user, `handoff_${action}`, b.loanId, action === "hot" ? `AI summary via ${via}` : action === "assign" ? `to ${h.owner}` : action === "resolve" ? h.outcome ?? "" : "");
   saveStore(store);
   const scope = deskScope(store, user);
   return NextResponse.json({ items: handoffList(store, user.username).filter((x) => inDesk(scope, x.borrowerId)) });

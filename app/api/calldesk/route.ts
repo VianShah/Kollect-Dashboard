@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { bad, requireUser } from "@/lib/api";
 import { OUTCOME_LABEL, deskQueue, deskScope, deskWorkspace, inDesk, type DeskOutcome } from "@/lib/calldesk";
-import { canContact } from "@/lib/contact";
+import { canContact, windowOpen } from "@/lib/contact";
+import { TEAM, presenceOf } from "@/lib/team";
 import { addEvent, audit, creditCampaigns, saveStore } from "@/lib/store";
 import { istMidnight } from "@/lib/time";
 import type { Disposition } from "@/lib/types";
@@ -38,6 +39,21 @@ export async function POST(req: Request) {
     saveStore(s);
     return NextResponse.json({ ok: true, startedAt: new Date().toISOString() });
   }
+  // Hand the borrower to a teammate who speaks their language, or up to the supervisor.
+  if (body.action === "transfer" || body.action === "toSupervisor") {
+    const to = body.action === "toSupervisor" ? TEAM.find((t) => t.lead) : TEAM.find((t) => t.id === body.to);
+    if (!to) return bad("Pick who to transfer to.");
+    const p = presenceOf(to, windowOpen(s.compliance));
+    if (body.action === "transfer" && p.status !== "Free") return bad(`${to.name} is ${p.status.toLowerCase()} right now. Pick someone who's free.`, 409);
+    const note = typeof body.note === "string" ? body.note.trim().slice(0, 300) : "";
+    const ts = new Date().toISOString();
+    if (body.action === "toSupervisor" && b.disposition !== "Escalated") Object.assign(b, { disposition: "Escalated", escalatedAt: ts, escalationReason: note || `Escalated to the supervisor by ${user.name}` });
+    s.handoffs[b.id] = { ...(s.handoffs[b.id] ?? { status: "Waiting" }), mode: "hot", owner: to.username ?? to.name, status: "With telecaller", summarySentVia: "CRM", updatedAt: ts };
+    addEvent(s, { type: "escalation", portfolio: b.portfolio, borrowerId: b.id, loanId: b.loanId, title: `${body.action === "toSupervisor" ? "Escalated to supervisor" : "Transferred"} · ${b.name}`, detail: `${user.name} → ${to.name}${note ? ` · ${note}` : ""}` });
+    audit(s, user, body.action === "toSupervisor" ? "desk_escalate_supervisor" : "desk_transfer", b.loanId, `to ${to.name} (${to.languages.join(", ")})${note ? ` · ${note}` : ""}`);
+    saveStore(s);
+    return NextResponse.json({ ok: true, to: to.name, workspace: deskWorkspace(s, user, b.id, a.scope), queue: deskQueue(s, user, a.scope) });
+  }
   if (body.action !== "outcome") return bad("Unknown action");
 
   const outcome = body.outcome as DeskOutcome;
@@ -56,7 +72,8 @@ export async function POST(req: Request) {
     addEvent(s, { type: "ptp", portfolio: b.portfolio, borrowerId: b.id, loanId: b.loanId, title: `Promise to pay · ${b.name}`, detail: `₹${amount.toLocaleString("en-IN")} by ${new Date(date).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" })} · telecaller` });
   } else if (outcome === "callback") {
     if (Number.isNaN(date) || date < now) return bad("Choose a call-back time in the future.");
-    s.followUps.push({ id: `F${now}`, borrowerId: b.id, loanId: b.loanId, name: b.name, portfolio: b.portfolio, product: b.product, at: new Date(date).toISOString(), requestedAt: ts, requestedVia: "Human Desk", note: note || "Asked to be called back", status: "Scheduled" });
+    s.followUps.push({ id: `F${now}`, borrowerId: b.id, loanId: b.loanId, name: b.name, portfolio: b.portfolio, product: b.product, at: new Date(date).toISOString(), requestedAt: ts, requestedVia: "Human Desk", note: note || "Asked to be called back", status: "Scheduled",
+      reachVia: ["Telecaller", "AI voice", "WhatsApp", "IVR"].includes(body.via) ? body.via : "Telecaller" });
     s.followUps.sort((x, y) => x.at.localeCompare(y.at));
     if (b.disposition !== "Escalated") Object.assign(b, { disposition: "Callback", stage: Math.max(b.stage, 1) });
   } else if (outcome === "paid") {

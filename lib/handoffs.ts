@@ -1,8 +1,10 @@
 import type { Store } from "./types";
 import { DAY } from "./time";
 import { riskScore, tierOf } from "./portfolio";
+import { TEAM } from "./team";
 
-const TELECALLERS = ["telecaller", "Priya N.", "Imran S.", "Deepa R."];
+/** A teammate who speaks the borrower's language, for escalations already with the desk in the demo data. */
+const speakerFor = (language: string, n: number) => { const pool = TEAM.filter((t) => !t.lead && t.languages.includes(language)); const t = (pool.length ? pool : TEAM)[n % (pool.length || TEAM.length)]; return t.username ?? t.name; };
 
 /** Simulated AI summary for a hot transfer: what happened, what they said, what to do next. */
 export function aiSummary(s: Store, borrowerId: string) {
@@ -32,7 +34,8 @@ export function handoffList(s: Store, me: string) {
     return {
       borrowerId: b.id, loanId: b.loanId, name: b.name, product: b.product, portfolio: b.portfolio, dpd: b.dpd, outstanding: b.outstanding,
       reason: b.escalationReason ?? "Asked for a person", escalatedAt: b.escalatedAt, waitingHours: waiting, overdueSla: waiting > 4 && h.status === "Waiting",
-      suggested, ...h, owner: h.owner ?? (h.status === "Waiting" ? undefined : TELECALLERS[n % TELECALLERS.length]), mine: h.owner === me,
+      suggested, ...h, owner: h.owner ?? (h.status === "Waiting" ? undefined : speakerFor(b.language, n)), mine: h.owner === me,
+      language: b.language, tier: tierOf(riskScore(b)), campaigns: s.campaigns.filter((c) => (c.status === "Running" || c.status === "Paused") && c.members.includes(b.id)).map((c) => c.name),
       summary: aiSummary(s, b.id),
     };
   }).sort((a, b) => Number(b.status === "Waiting") - Number(a.status === "Waiting") || (b.waitingHours - a.waitingHours));

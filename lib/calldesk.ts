@@ -9,6 +9,9 @@ import { riskScore, tierOf } from "./portfolio";
 import { istMidnight } from "./time";
 import type { Campaign, Scope, Store } from "./types";
 import { waState } from "./whatsapp";
+import { personaOf, riskOf, DEFAULT_RULES, segmentKey, bucketFor } from "./allocation";
+import { TEAM, presenceOf, teammateFor } from "./team";
+import { windowOpen } from "./contact";
 
 const DAY = 86_400_000;
 
@@ -47,7 +50,60 @@ export function deskQueue(s: Store, user: SessionUser, scope: Scope) {
       reason: f.note, at: f.at, overdue: Date.parse(f.at) < now, followUpId: f.id, outstanding: b?.outstanding ?? 0, campaigns: campaignsOf(s, f.borrowerId),
     };
   }).sort((a, b) => a.at.localeCompare(b.at));
-  return { escalations, callbacks, scopedToCampaigns: !!allowed, campaigns: allowed ? telecallerCampaigns(s).map((c) => c.name) : null };
+  const allocations = allocationsFor(s, user, scope, new Set([...escalations.map((x) => x.borrowerId), ...callbacks.map((x) => x.borrowerId)]));
+  return { escalations, callbacks, allocations, scopedToCampaigns: !!allowed, campaigns: allowed ? telecallerCampaigns(s).map((c) => c.name) : null, team: teamBoard(s, user) };
+}
+
+const hash = (v: string) => { let h = 2166136261; for (let i = 0; i < v.length; i++) h = Math.imul(h ^ v.charCodeAt(i), 16777619); return h >>> 0; };
+
+/** Who on the team works an account: someone who speaks the borrower's language, spread evenly. */
+export function ownerOf(language: string, borrowerId: string) {
+  const pool = TEAM.filter((t) => !t.lead && t.languages.includes(language));
+  const list = pool.length ? pool : TEAM.filter((t) => !t.lead);
+  return list[hash(borrowerId) % list.length];
+}
+
+/**
+ * Accounts allocated straight to the telecaller: borrowers in a running campaign whose segment goes to telecallers,
+ * who speak a language the telecaller speaks. High priority first, then the biggest balances.
+ */
+function allocationsFor(s: Store, user: SessionUser, scope: Scope, skip: Set<string>) {
+  const me = teammateFor(user.username);
+  const rows: { kind: "allocation"; borrowerId: string; loanId: string; name: string; product: string; portfolio: string; reason: string; overdue: boolean; outstanding: number; campaigns: string[]; priority: "High" | "Normal"; language: string; dpd: number }[] = [];
+  for (const c of telecallerCampaigns(s)) {
+    const toPeople = new Set(Object.entries(c.segments ?? {}).filter(([, l]) => l.includes("telecaller")).map(([k]) => k));
+    for (const id of c.members) {
+      if (skip.has(id) || rows.some((r) => r.borrowerId === id)) continue;
+      const b = s.borrowers.find((x) => x.id === id);
+      if (!b || ["Paid", "Dispute", "Escalated"].includes(b.disposition) || (scope.portfolio && b.portfolio !== scope.portfolio)) continue;
+      const v = riskOf(b, personaOf(b), { ...DEFAULT_RULES, ...(c.risk ?? {}) });
+      if (c.segments && !toPeople.has(segmentKey(bucketFor(b), v.tier))) continue;
+      if (me && !me.languages.includes(b.language)) continue; // the signed-in telecaller gets accounts in the languages they speak
+      rows.push({ kind: "allocation", borrowerId: b.id, loanId: b.loanId, name: b.name, product: b.product, portfolio: b.portfolio,
+        reason: `${v.tier} risk · ${b.dpd} DPD · ${v.reasons[0]}`, overdue: false, outstanding: b.outstanding, campaigns: [c.name], priority: v.priority, language: b.language, dpd: b.dpd });
+    }
+  }
+  return rows.sort((a, b) => Number(b.priority === "High") - Number(a.priority === "High") || b.outstanding - a.outstanding).slice(0, 40);
+}
+
+/** Everyone on the desk right now, and who speaks what, for transfers. */
+export function teamBoard(s: Store, user: SessionUser) {
+  const open = windowOpen(s.compliance);
+  const me = teammateFor(user.username);
+  const day = new Date().toISOString().slice(0, 10);
+  const people = TEAM.map((t) => {
+    const p = presenceOf(t, open);
+    const r = (k: string) => (hash(`${t.id}:${day}:${k}`) % 1000) / 1000;
+    const calls = open ? 18 + Math.floor(r("calls") * 30) : 0;
+    return { id: t.id, name: t.name, languages: t.languages, lead: !!t.lead, me: t.id === me?.id, ...p,
+      today: { calls, connected: Math.round(calls * (0.45 + r("conn") * 0.2)), promises: Math.round(calls * (0.08 + r("ptp") * 0.08)) } };
+  });
+  const languages = [...new Set(TEAM.flatMap((t) => t.languages))].sort().map((language) => {
+    const ps = people.filter((p) => p.languages.includes(language) && !p.me);
+    return { language, free: ps.filter((p) => p.status === "Free").length, total: ps.length };
+  });
+  const count = (st: string) => people.filter((p) => p.status === st).length;
+  return { people, languages, counts: { free: count("Free"), onCall: count("On a call"), wrapUp: count("Wrap-up"), away: count("Break") + count("Offline") } };
 }
 
 const day = (iso: string) => new Date(iso).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" });
@@ -85,6 +141,19 @@ export function deskWorkspace(s: Store, user: SessionUser, borrowerId: string, s
     intent,
     whatsapp: wa.slice(0, 20),
     canCall: voice.ok, callBlockedReason: voice.ok ? null : voice.reason,
+    told: calls.slice(0, 4).map((c) => ({ ts: c.ts, channel: c.channel === "Human Desk" ? "Telecaller" : c.channel, outcome: c.classification,
+      text: c.classification === "PTP" ? "Agreed a payment date; reminded of the amount due and the payment link."
+        : c.classification === "Callback" ? "Asked to be called back; told the amount due and that charges may apply."
+        : c.classification === "Dispute" ? "Raised a dispute; told the account will be checked and outreach paused."
+        : c.classification === "Escalated" ? "Asked for a person; told a telecaller would call back."
+        : c.classification === "Paid" ? "Paid; thanked and confirmed the receipt." : "Reminded of the dues and the payment options." })),
+    offers: [
+      ...(b.ptpDate ? [{ label: "Promise to pay", detail: `₹${(b.ptpAmount ?? b.emi).toLocaleString("en-IN")} by ${day(b.ptpDate)}`, status: b.ptpOutcome ?? "pending" }] : []),
+      ...(/hardship|lost job|medical/i.test(b.escalationReason ?? "") ? [{ label: "Part-payment plan", detail: `₹${Math.round(b.emi / 2).toLocaleString("en-IN")} now, rest in 30 days`, status: "offered" }] : []),
+      ...(/settle/i.test(b.escalationReason ?? "") || b.dpd > 90 ? [{ label: "Settlement", detail: "Eligibility to be confirmed by the lender before quoting", status: "not quoted" }] : []),
+      ...(b.paymentLink !== "Not shared" ? [{ label: "Payment link", detail: b.paymentLink, status: b.paymentLink === "Paid via link" ? "used" : "sent" }] : []),
+    ],
+    owner: ownerOf(b.language, b.id).name,
   };
 }
 
